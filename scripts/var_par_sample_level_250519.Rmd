@@ -1,0 +1,468 @@
+---
+title: "VarPart SampleLevel"
+author: "Neisse, Niklas (neisse.n@protonmail.com)"
+date: "2024-06-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Variation Partitioning
+### On Sample Level Variables
+**bolt**
+*italic*
+
+We perform a variation partitioning employing the `vegan::vegdist` function (Oksanen, 2023) to test how much of the variation in our bacterial dissimilarities can be explained by (1) Dispersal, (2) Abiotic Niche Processes (NP), (3) Active Biotic NP, and (4) Passive Biotic NP.
+
+Variation partitioning is a type of analysis that devides the variation of a response variable, such as our beta diversity, among multiple explanatory data sets, here sets of environmental, biological, and spatial variables.
+
+A model with two explanatory data sets calculates the different shares as follows (Viana et al., 2022):
+
+1. [a + b + c] is the explained variance of all (X1 + X2) explanatory sets together, calculated using a RDA 
+2. [d] is the unexplained variance from the same RDA
+3. [a] is the explained variance of X1, calculated using a partial RDA controlling for all other explanatory variable sets (Y by X1|X2)
+4. [c] is the is the explained variance of X1, calculated using a partial RDA controlling for all other explanatory variable sets (Y by X2|X1)
+5. [b] is calculated by subtraction, b = [a + b] + [b + c] - [a + b + c]. It is not a result of an RDA and can therefore not be tested for significance. *It can also be negative indicating that the response matrix is better explained by the combination of X1 and X2 than by either matrix on its own*
+
+Only if the overall model is significant should the individual partitions be examined.
+<https://r.qcbs.ca/workshop10/book-en/variation-partitioning.html>.
+
+/
+
+#### Setting the stage
+
+For the script we us the following packages, verifying that they are loaded in correctly:
+
+```{r stage, echo=FALSE, message=FALSE, warning=FALSE}
+# rm(list = ls()) # Remove all objects in the global environment
+
+# Set seed for reproducibility
+set.seed(100) 
+
+# Set directory pathways
+dir_data <- 'path/to/N24_space_mic_dispersal/data/'
+
+.cran_packages <- c('skimr','tidyverse','vegan','viridis','corrplot') # Define CRAN packages
+.bioc_packages <- c('phyloseq') # Define Bioconductor packages
+#'dada2', 'phyloseq', 'DECIPHER', 'phangorn'
+
+.inst <- .cran_packages %in% installed.packages() # Check if CRAN packages are installed
+if(any(!.inst)) {
+  install.packages(.cran_packages[!.inst]) # Install missing CRAN packages
+}
+
+.inst <- .bioc_packages %in% installed.packages() # Check if Bioconductor packages are installed
+if(any(!.inst)) {
+  source("http://bioconductor.org/biocLite.R") # Source Bioconductor installation script
+  biocLite(.bioc_packages[!.inst], ask = F) # Install missing Bioconductor packages without asking for confirmation
+}
+
+sapply(c(.cran_packages, .bioc_packages), require, character.only = TRUE) # Load required packages
+
+
+```
+
+```{r check_dir, message=FALSE, warning=FALSE, include=FALSE}
+dir_data <- 'C:/Users/tn75utid/Desktop/N24_publication/N24_space_mic_analysis/data'
+```
+
+
+
+### The data
+
+Our data is contained in a `phyloseq::phyloseq` object (McMurdie & Holmes, 2013) which combines the rarefied relative abundances of our bacterial community with their meta data and phylogeny. 
+We exculed one observation through the rarefaction, leaving us with:
+```{r data, echo=FALSE, message=FALSE, warning=FALSE}
+#### Data Read-in ####
+rarefied <- readRDS(file.path(dir_data, "rarefied.RDS"))
+
+data.frame(Samples = nsamples(rarefied), ASVs = ntaxa(rarefied))
+
+```
+
+#### 1. `vegan::vegdist` Bray-Curtis dissimilarity index of soil bacteria
+
+
+$d_{jk} = \frac{\sum_{i} |x_{ij} - x_{ik}|}{\sum_{i} (x_{ij} + x_{ik})}$
+
+
+```{r bacs, echo=TRUE, message=FALSE, warning=FALSE}
+vp.bacs <- vegdist(as.data.frame(as.matrix(rarefied@otu_table)))
+```
+
+#### 2. Distance measurement
+
+Raw Latitude and Longitude of the samples
+
+```{r dist, echo=FALSE, message=FALSE, warning=FALSE}
+vp.dispersal <- as.data.frame(as.matrix(rarefied@sam_data[,5:6]))
+skim(vp.dispersal)[c(2,4:6,12)]
+
+```
+
+#### 3. Abiotic Environmental Passive Niche Processes
+
+```{r AbioticNP, echo=FALSE, message=FALSE, warning=FALSE}
+# names(rarefied@sam_data)
+vp.abiotic_niche_process <- as.data.frame(
+  as.matrix(rarefied@sam_data[,c(
+    'C_.', 'N_.', 'Soil_moisture', 'pH'
+  )])) %>% 
+  mutate(CNRatio = `C_.`/`N_.`)
+skim(vp.abiotic_niche_process)[c(2,4:6,12)]
+
+```
+
+#### 4. Biotic Active Plant Niche Processes
+
+BAPNP is a matrix containing the relative abundance of a total of 106 plant species.
+
+
+```{r BioticActiveNP, echo=FALSE, message=FALSE, warning=FALSE}
+# names(rarefied@sam_data)
+vp.biotic_niche_process <- as.data.frame(as.matrix(rarefied@sam_data[,53:158])) %>% 
+  mutate_all(~ifelse(is.na(.), 0, .))
+vp.biotic_niche_process <- as.data.frame(as.matrix(vp.biotic_niche_process))
+
+```
+
+The following shows the sum of the relative abundance for the most abundant plants colored on a plot level.
+
+```{r BioticActiveNP explo, echo=FALSE, message=FALSE, warning=FALSE}
+bnp.explo00 <- vp.biotic_niche_process %>%
+  rownames_to_column(var = "Sample") %>%
+  gather(key = "Species", value = "RelativeAbundance", -Sample)
+
+bnp.explo01 <- bnp.explo00 %>% group_by(Species) %>%
+  summarise(TotalAbundance = sum(RelativeAbundance))
+
+bnp.explo02 <- bnp.explo00 %>%
+  left_join(bnp.explo01, by = "Species") %>%
+  filter(TotalAbundance >= 50) %>%
+  arrange(desc(TotalAbundance)) %>%
+  mutate(Plot = str_extract(Sample, "^[^_]+"))
+
+custom_palette <- viridis_pal()(18)
+custom_palette[1:9] <- rev(custom_palette[1:9])
+custom_palette[10:18] <- rev(custom_palette[10:18])
+
+ggplot(bnp.explo02, aes(x = reorder(Species, -TotalAbundance), 
+                        y = RelativeAbundance, fill = Plot)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = custom_palette) +
+  labs(title = "Sum of Relative Abundances per Species",
+       x = "Species",
+       y = "Total Relative Abundance",
+       fill = "Sample") +
+  theme_classic() +
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 10, angle = 60, 
+                                   vjust = .6, color = 'black'),
+        axis.text.y = element_text(size = 10, angle = 60, 
+                                   hjust = 1, vjust = -.3, color = 'black'),
+        axis.ticks.x = element_line(size = 2, lineend = "butt"),
+        axis.ticks.y = element_line(size = 2, lineend = "butt"),
+        axis.ticks.length  = unit(0.4, "cm"),
+        axis.line = element_line(size = 1.1),
+        legend.title = element_blank(),  # Hide legend title
+#        legend.text = element_text(size = 10),  # Customize legend text size
+#        legend.key.size = unit(1.5, "cm")
+) 
+
+
+
+```
+
+
+#### 5. Biotic Passive Plant Niche Processes
+
+BPPNPs is a collection of different plant related traits on a sample level, that is averages of the sample quadrats
+
+```{r BioticPassiveNP, echo=FALSE, message=FALSE, warning=FALSE}
+vp.biotic_niche_process_passive <- as.data.frame(as.matrix(rarefied@sam_data[,c(
+  'BioMass_g',
+  # LMA: mass of a leaf per unit area in grams per square meter (g/m²) VS.
+  # SLA: reciprocal LMA, leaf area per unit leaf mass, in square meters per gram (m²/g). 
+  'SLA',
+  'COV_Bare', 'COV_Litter', 'COV_Moss', 
+  'COV_Senesc')]))
+skim(vp.biotic_niche_process_passive)[c(2,4:6,12)]
+```
+
+### Full Variance Partitioning
+**Q: What does it matter that the different explanatory variables are not of the same dimension -> Active plants with 106 attributes (columns) vs. 'dispersal' with 2 only? **
+
+If we run a full variation partitioning model that excludes the all observations containing any Na's (unfortunately the function does not provide any setting options like the rda), we donot get any estimation for plant ID. Also we receive a lot of warnings for coliniearity!
+
+```{r varparfull, echo=FALSE, message=FALSE, warning=FALSE}
+rarefied.nNa <- subset_samples(rarefied, complete.cases(vp.abiotic_niche_process))
+vp.bacs.nNa <- vegdist(as.data.frame(as.matrix(rarefied.nNa@otu_table)))
+vp.full.biotic_np_active.nNa <- vp.biotic_niche_process[-which(!complete.cases(vp.abiotic_niche_process)), ]
+vp.full.biotic_np_passive.nNa <- vp.biotic_niche_process_passive[-which(!complete.cases(vp.abiotic_niche_process)), ]
+vp.full.dispersal.nNa <- vp.dispersal[-which(!complete.cases(vp.abiotic_niche_process)), ]
+vp.full.abiotic_np.nNa <- vp.abiotic_niche_process[-which(!complete.cases(vp.abiotic_niche_process)), ]
+
+varpart(vp.bacs.nNa, vp.full.dispersal.nNa, vp.full.abiotic_np.nNa, vp.full.biotic_np_active.nNa, vp.full.biotic_np_passive.nNa)
+```
+
+Therefore we continue with a step-wise-dbRDA variable selection for each explanatory data set.
+
+### dbRDA Stepwise Selection
+
+
+For plant ID (aka. active biotic NP) we ran the selection on 3 subsets first and then one ontop for all the selected variables to get the final selection
+
+Assumptions are not really of relevance here. 
+
+-> *make sure to understand why!*
+
+The following are the assumptions for dbRDAs
+1. Linearity of Relationships: dbRDA assumes that the relationships between the explanatory variables and the response variables are linear with respect to the chosen distance metric. 
+2. Like other multivariate regression methods, dbRDA assumes that there is no severe multicollinearity among the explanatory variables.
+3. Independence of Observations: The analysis assumes that the observations or samples are independent of each other. 
+4. Homoscedasticity: The method assumes homoscedasticity, meaning that the variance of the response data is consistent across different levels of the explanatory variables.
+
+```{r selectionPlantID1, echo=FALSE, message=FALSE, warning=FALSE}
+mod00 <- dbrda(vp.bacs ~ 1, vp.biotic_niche_process[,1:40])  # Model with intercept only
+mod01 <- dbrda(vp.bacs ~ ., vp.biotic_niche_process[,1:40])  #
+```
+
+Here are:
+1. Standardized residuals represent the deviations of the observed values from the predicted values in terms of standard units shown here against the fitted values and suggesting heteroscedasticity
+2. The normality of the residuals, showing Non-linearity or heteroscedasticity of the residuals
+
+-> This is relative plant abundance.. so naturally the data is zero-inflated ect.
+
+```{r selectionPlantID1Assuption, echo=FALSE, message=FALSE, warning=FALSE}
+# checking the assumptions 
+fitted_values <- predict(mod01, type = "response")
+residuals_std <- residuals(mod01, display = "species")
+par(mfrow = c(1, 2))
+plot(fitted_values, residuals_std, 
+     main = "Standardized Residuals vs. Fitted Values",
+     xlab = "Fitted Values", ylab = "Standardized Residuals")
+par(new=TRUE)  # Overlay on the existing plot
+rug(fitted_values, side = 3, col = rgb(49, 104, 142, 50, maxColorValue = 255))
+par(new=TRUE)
+rug(residuals_std, side = 4, col = rgb(53, 183, 121, 50, maxColorValue = 255))
+abline(h = 0.5, col = "red", lty = 2)  # Adjust the color and line type as needed
+qqnorm(residuals_std, col = "blue", pch = 20)
+qqline(residuals_std, col = "red")
+```
+
+```{r selectionPlantIDRest, message=FALSE, warning=FALSE, include=FALSE}
+mod21 <- dbrda(vp.bacs ~ 1, vp.biotic_niche_process[,41:80])
+mod22 <- dbrda(vp.bacs ~ ., vp.biotic_niche_process[,41:80])
+mod31 <- dbrda(vp.bacs ~ 1, vp.biotic_niche_process[,80:length(vp.biotic_niche_process)])
+mod32 <- dbrda(vp.bacs ~ ., vp.biotic_niche_process[,80:length(vp.biotic_niche_process)])
+vp_var.p1 <- ordiR2step(mod00, scope = formula(mod01), perm.max = 999)
+vp_var.p2 <- ordiR2step(mod21, scope = formula(mod22), perm.max = 999)
+vp_var.p3 <- ordiR2step(mod31, scope = formula(mod32), perm.max = 999)
+### Retreaving the selected variable names and combining them to one
+vp_var.vnp1 <- head(gsub("\\+\\s", "", rownames(vp_var.p1$anova)), -1)
+vp_var.vnp2 <- head(gsub("\\+\\s", "", rownames(vp_var.p2$anova)), -1)
+vp_var.vnp3 <- head(gsub("\\+\\s", "", rownames(vp_var.p2$anova)), -1)
+vp_var.vn <- c(vp_var.vnp1,vp_var.vnp2,vp_var.vnp3)
+vp.biotic_niche_process.selection <- vp.biotic_niche_process %>% 
+  dplyr::select(all_of(vp_var.vn))
+mod41 <- dbrda(vp.bacs ~ 1, vp.biotic_niche_process.selection)
+mod42 <- dbrda(vp.bacs ~ ., vp.biotic_niche_process.selection)
+vp_var.p4 <- ordiR2step(mod41, scope = formula(mod42), perm.max = 999)
+vp_var.vnp4 <- head(gsub("\\+\\s", "", rownames(vp_var.p4$anova)), -1)
+```
+
+```{r selectionPlantFunction, message=FALSE, warning=FALSE, include=FALSE}
+
+mod.p51 <- dbrda(vp.bacs ~ 1, vp.biotic_niche_process_passive)
+mod.p52 <- dbrda(vp.bacs ~ ., vp.biotic_niche_process_passive)
+vp_var.p5 <- ordiR2step(mod.p51, scope = formula(mod.p52), perm.max = 999)
+vp_var.vn.p5 <- head(gsub("\\+\\s", "", rownames(vp_var.p5$anova)), -1)
+
+```
+
+```{r selectionEnv, message=FALSE, warning=FALSE, include=FALSE}
+mod.e11 <- dbrda(vp.bacs.nNa ~ 1, vp.full.abiotic_np.nNa)
+mod.e12 <- dbrda(vp.bacs.nNa ~ ., vp.full.abiotic_np.nNa)
+vp_var.e1 <- ordiR2step(mod.e11, scope = formula(mod.e12), perm.max = 999, na.action = na.omit)
+vp_var.vn.e1 <- head(gsub("\\+\\s", "", rownames(vp_var.e1$anova)), -1)
+
+```
+
+### Co-variances in the different data sets.
+**Q: What do I do with the co-variances in the explanatory data?**
+
+#### Co-variance in the dispersal variabales:
+Naturally longitude and latitude are highly correlated.
+
+```{r VarianceCovariancesWithinDistance, echo=FALSE, message=FALSE, warning=FALSE}
+as.data.frame(cor(vp.dispersal))[2,] %>% 
+  dplyr::select(lon)
+```
+
+
+#### Co-variance in the abiotic variabales:
+```{r VarianceCovariancesWithinEnvironment, echo=FALSE, message=FALSE, warning=FALSE}
+
+corrplot(cor(vp.full.abiotic_np.nNa), 
+         type = "upper", method = "square", diag = FALSE, 
+         addCoef.col = "black", number.cex = .5,
+         tl.col = "black", tl.srt = 45, tl.cex = .5, tl.offset = 1)
+
+```
+
+#### Co-variance in the biotic passive variabales:
+```{r VarianceCovariancesWithinBioPassive, echo=FALSE, message=FALSE, warning=FALSE}
+
+corrplot(cor(vp.biotic_niche_process_passive), 
+         type = "upper", method = "square", diag = FALSE, 
+         addCoef.col = "black", number.cex = .5,
+         tl.col = "black", tl.srt = 45, tl.cex = .5, tl.offset = 1)
+```
+
+```{r VarPar4Way, message=FALSE, warning=FALSE, include=FALSE}
+c(vp_var.p4$call,vp_var.p5$call,vp_var.e1$call)
+vp.biotic_niche_process.4way <- vp.biotic_niche_process %>% 
+  dplyr::select(all_of(vp_var.vnp4))
+vp.biotic_niche_process.4way.nNa <- vp.biotic_niche_process.4way[-which(!complete.cases(vp.abiotic_niche_process)), ]
+vp.biotic_niche_process_passive.4way <- vp.biotic_niche_process_passive %>% 
+  dplyr::select(all_of(vp_var.vn.p5))
+vp.biotic_niche_process_passive.4way.nNa <- vp.biotic_niche_process_passive.4way[-which(!complete.cases(vp.abiotic_niche_process)), ]
+vp.abiotic_niche_process.4way.nNa <- vp.full.abiotic_np.nNa %>% 
+  dplyr::select(all_of(vp_var.vn.e1))
+vp.dispersal.nNa <- vp.dispersal[-which(!complete.cases(vp.abiotic_niche_process)), ]
+
+varpar4way <- varpart(vp.bacs.nNa, vp.dispersal.nNa, vp.abiotic_niche_process.4way.nNa, vp.biotic_niche_process.4way.nNa, vp.biotic_niche_process_passive.4way.nNa)
+
+```
+
+
+#### Co-varibales between processes
+```{r VarianceCovariancesAmongProcesses, echo=FALSE, message=FALSE, warning=FALSE}
+
+corrplot(cor(as.data.frame(c(vp.dispersal.nNa,
+                    vp.abiotic_niche_process.4way.nNa,
+                    vp.biotic_niche_process.4way.nNa,
+                    vp.biotic_niche_process_passive.4way.nNa))), 
+         type = "upper", method = "square", diag = FALSE, 
+         addCoef.col = "black", number.cex = .5,
+         tl.col = "black", tl.srt = 45, tl.cex = .5, tl.offset = 1)
+
+
+```
+
+### Variation Partitioning
+
+Venn-diagram showing the explained variation in the soil bacterial community.
+
+```{r Varpart4wayVandiagramm, echo=FALSE, message=FALSE, warning=FALSE}
+# Show values for all partitions by putting 'cutoff' low enough:
+# png("/results/varpar4w.png", width = 800, height = 600)
+plot(varpar4way, 
+     Xnames = c('', '', '', ''),
+     bg = c("#440154FF", "#31688EFF", "#35B779FF", "#FDE725FF"), alpha = 80,
+     digits = 1,
+     cutoff = 0, 
+     cex = 1)
+text(x = c(-2.3, -1.6, 2, 2.5), y = c(0, 1, 1, 0), 
+     labels = c('Dispersal', 'Abiotic NP', 'Active Biotic NP', 'Passive Biotic NP'), 
+     srt = 0, pos = 1, xpd = TRUE,
+     cex = 1)
+# dev.off()
+
+```
+
+```{r message=FALSE, warning=FALSE}
+#install.packages('variancePartition')
+#library('variancePartition')
+```
+```{r}
+#remotes::install_github("jgmv/comecol")
+library(comecol)
+
+varpar_4w_p_df <- test_vp4(varpar4way)
+varpar_4w_p_df
+
+write.csv(varpar_4w_p_df, "C:/code/N24_space_mic_dispersal/data/varpar_4w_p.csv", row.names = TRUE)
+
+varpar_4w_p_df %>% 
+  as.data.frame()
+
+```
+
+```{r euler}
+
+#install.packages('eulerr')
+library(eulerr)
+
+# mod_vp_eu <- euler(c(
+#   "Distance" = 0.01765,
+#   "Abiotic NP" = 0.00931,
+#   "Active Biotic NP" = 0.07447,
+#   "Passive Biotic NP" = 0.00777,
+# 
+#   "Distance&Abiotic NP" = 0.02656,
+#   "Distance&Active Biotic NP" = 0.12583,
+#   "Distance&Passive Biotic NP" = 0.01647,
+#   "Abiotic NP&Active Biotic NP" = 0.00021,
+#   "Abiotic NP&Passive Biotic NP" = 0.00670,
+#   "Active Biotic NP&Passive Biotic NP" = 0.06127,
+# 
+#   "Distance&Abiotic NP&Active Biotic NP" = 0.01803,
+#   "Distance&Abiotic NP&Passive Biotic NP" = 0.0,  # cleaned from -0.00143
+#   "Distance&Active Biotic NP&Passive Biotic NP" = 0.01404,
+#   "Abiotic NP&Active Biotic NP&Passive Biotic NP" = 0.03633,
+# 
+#   "Distance&Abiotic NP&Active Biotic NP&Passive Biotic NP" = 0.00725
+#   ))
+
+mod_vp_eu <- euler(c(
+  "Distance" = 0.02,
+  "Abiotic NP" = 0.01,
+  "Active Biotic NP" = 0.07,
+  "Passive Biotic NP" = 0.01,
+
+  "Distance&Abiotic NP" = 0.03,
+  "Distance&Active Biotic NP" = 0.13,
+  "Distance&Passive Biotic NP" = 0.02,
+  "Abiotic NP&Active Biotic NP" = 0.00,
+  "Abiotic NP&Passive Biotic NP" = 0.01,
+  "Active Biotic NP&Passive Biotic NP" = 0.06,
+
+  "Distance&Abiotic NP&Active Biotic NP" = 0.02,
+  "Distance&Abiotic NP&Passive Biotic NP" = 0.00,  # was -0.00143
+  "Distance&Active Biotic NP&Passive Biotic NP" = 0.01,
+  "Abiotic NP&Active Biotic NP&Passive Biotic NP" = 0.04,
+
+  "Distance&Abiotic NP&Active Biotic NP&Passive Biotic NP" = 0.01
+))
+
+
+p_vp_eu <- plot(mod_vp_eu,
+     quantities = TRUE,
+     fills = list(fill = viridis::viridis(4), alpha = 0.6),
+     labels = list(font = 2),
+     main = "Variation partitioning (Euler Diagram)")
+
+library(grid)
+
+# Create the Euler diagram
+p <- plot(mod_vp_eu,
+          quantities = TRUE,
+          fills = list(fill = viridis::viridis(4), alpha = 0.6),
+          labels = FALSE,
+          main = "Variation Partitioning")
+
+p
+# Manually add labels using grid.text
+grid.text("Dispersal", x = 0.15, y = 0.75, gp = gpar(fontface = "bold"))
+grid.text("Abiotic NP", x = 0.85, y = 0.75, gp = gpar(fontface = "bold"))
+grid.text("Active Biotic NP", x = 0.5, y = 0.95, gp = gpar(fontface = "bold"))
+grid.text("Passive Biotic NP", x = 0.5, y = 0.1, gp = gpar(fontface = "bold"))
+
+
+# ggsave(plot = p_ca_eu, paste0(dir_resu, "ca_eu.png"), width = 5.5, height = 6, dpi = 300)
+```
+
