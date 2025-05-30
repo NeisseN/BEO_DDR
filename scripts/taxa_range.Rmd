@@ -1,0 +1,326 @@
+---
+title: "Taxa Range"
+author: "Neisse"
+date: "2025-01-29"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Briefing
+
+
+
+## 2. Questions 
+1. 
+2. 
+
+
+
+### Setting the stage 
+
+<details>
+  <summary>Expand for details on packages and more settings.</summary>
+
+The following packages are required: `tidyverse`, `vegan`, `glmm.hp`, `partR2`, `skimr`, `MASS`, `DHARMa` , `ggeffects`, `glmmTMB`, `lme4`, `glmm.hp`
+
+```{r Stage, echo=TRUE, message=FALSE, warning=FALSE}
+#### Setting the stage ####
+# Remove all objects in the global environment
+# rm(list = ls()) 
+
+# Set seed for reproducibility
+set.seed(100) 
+
+# Set directory pathways
+dir_data <- 'path/to/N24_space_mic_dispersal/data/'
+
+# Define CRAN packages
+.cran_packages <- c('GeoRange','tidyverse','viridis', 'skimr')
+# Define Bioconductor packages
+.bioc_packages <- c('phyloseq') 
+
+# Install missing CRAN packages
+.inst <- .cran_packages %in% installed.packages() 
+if(any(!.inst)) {
+  install.packages(.cran_packages[!.inst]) 
+}
+
+# Check if Bioconductor packages are installed
+.inst <- .bioc_packages %in% installed.packages() 
+if(any(!.inst)) {
+  # Source Bioconductor installation script
+  source("http://bioconductor.org/biocLite.R") 
+  # Install missing Bioconductor packages without asking for confirmation
+  biocLite(.bioc_packages[!.inst], ask = F) 
+}
+
+# Load required packages
+sapply(c(.cran_packages, .bioc_packages), require, character.only = TRUE) 
+ 
+```
+
+```{r check_dir, message=FALSE, warning=FALSE, include=FALSE}
+dir_data <- 'C:/code/N24_space_mic_dispersal/data/'
+```
+
+
+## 3 Data  
+
+
+```{r data, echo=TRUE, message=FALSE, warning=FALSE}
+# Rarefied phyloseq object
+rarefied <- readRDS(paste0(dir_data, "rarefied.RDS"))
+```
+
+
+####  Convex Hull area calculation
+Uses the cylindrical equal area projection in order to check if the minimum convex hull wraps around the prime meridian
+```{r}
+CHAdf <- data.frame(asv = taxa_names(rarefied),
+                    chull_areas = numeric(ntaxa(rarefied)))
+
+# Convert OTU table to matrix and transpose if needed
+otu <- as(rarefied@otu_table, "matrix")
+if (taxa_are_rows(rarefied)) {
+  otu <- t(otu)
+}
+
+# Loop over ASVs (columns of OTU matrix)
+for (i in 1:ncol(otu)) {
+  sub.nr <- which(otu[, i] > 0)  # samples where ASV i is present
+  lon <- rarefied@sam_data$lon[sub.nr]
+  lat <- rarefied@sam_data$lat[sub.nr]
+
+  # Validate that there are at least 3 presence points
+  if (length(lon) >= 3) {
+    CHAdf$chull_areas[i] <- CHullArea(lon, lat)
+  } else {
+    CHAdf$chull_areas[i] <- 0
+  }
+}
+```
+
+
+
+#### GCD 
+Calculates the maximum pairwise great circle distance from a set of decimal degree coordinates
+
+```{r GCD}
+GCDdf <- data.frame(asv = colnames(rarefied@otu_table))
+for (i in 1:ncol(rarefied@otu_table)) {
+  sub.nr <- which(rarefied@otu_table[,i]>0)
+  GCDdf$gcd[i] <- GCD(rarefied@sam_data$lon[sub.nr],
+                   rarefied@sam_data$lat[sub.nr])
+}
+GCDdf$gcd[is.na(GCDdf$gcd)] <- 0
+```
+
+
+### Prevalence
+Proportion of sites in which the species was recorded as present
+
+```{r Prevalence}
+Prevdf <- data.frame(asv = colnames(rarefied@otu_table))
+for (i in 1:ncol(rarefied@otu_table)) {
+  Prevdf$prev[i] <- sum(rarefied@otu_table[,i] != 0)/nrow(rarefied@otu_table[,i])
+}
+```
+
+
+### Abundance
+Number of individuals divided by the rarefaction depth of about 24000 and divided by the number of samples.
+```{r}
+Abundf <- data.frame(asv = colnames(rarefied@otu_table))
+Abundf$abun <- colSums(rarefied@otu_table)/23942/nrow(rarefied@otu_table)
+
+### Taxa
+Taxadf <- data.frame(rarefied@tax_table)
+Taxadf$asv <- rownames(Taxadf)
+
+### Big Merge 
+# List of data frames to merge
+dfs <- list(Abundf, Prevdf, CHAdf, GCDdf, Taxadf)
+# Merge
+df <- Reduce(function(x, y) merge(x, y, by = "asv", all.x = TRUE), dfs) 
+
+### Dominate Phyla
+# Calculate the dominant phyla and update the df
+dominant_phyla <- df %>%
+  group_by(Phylum) %>%
+  summarise(Sum = sum(abun)) %>%
+  arrange(desc(Sum)) %>%
+  slice(1:8) %>%
+  pull(Phylum)
+
+# Update df with d9phyl column and convert it to a factor with ordered levels
+df <- df %>%
+  mutate(d8phyl = ifelse(Phylum %in% dominant_phyla, Phylum, NA),
+         d8phyl = factor(d8phyl, levels = dominant_phyla))
+
+#write.csv(df, file = paste0(dir_data, 'TaxaRange.df'))
+
+```
+
+<details>
+  <summary>Expand for data summary.</summary>
+
+```{r}
+skim(df)
+```
+
+
+## Plots
+
+### Abundance by Prevalence
+```{r}
+ggplot() +
+  geom_point(data = df, aes(x = prev, y= abun)) +
+  labs(x = "Rel. Abundace", y = "Prevalence") +
+  theme_classic()
+```
+
+
+### Convex Hull Area by Prevalence
+```{r}
+ggplot() +
+  geom_point(data = df, aes(x = prev, y= chull_areas)) +
+  labs(x = "Convex Hull Area", y = "Prevalence") +
+  theme_classic()
+```
+
+
+### Convex Hull Area by Abundance 
+```{r}
+ggplot() +
+  geom_point(data = df, aes(x = abun, y= chull_areas)) +
+  labs(x = "Rel. Abundace", y = "Convex Hull Area") +
+  theme_classic()
+
+ggp_ch_abund <- ggplot() +
+  geom_point(data = df, aes(x = abun * 100, y = chull_areas, 
+                            colour = factor(d8phyl, levels = dominant_phyla))) +
+  scale_color_manual(values = viridis_pal()(8)) +
+  labs(x = "Rel. Abundance (%)", 
+       y = "Convex Hull Area (km²)", 
+       colour = "Phylum") +
+  theme_classic() +
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 10, angle = 60, vjust = .6, color = 'black'),
+        axis.text.y = element_text(size = 10, angle = 60, hjust = 1, vjust = -.3, color = 'black'),
+        axis.ticks.x = element_line(linewidth = 2, lineend = "butt"),
+        axis.ticks.y = element_line(linewidth = 2, lineend = "butt"),
+        axis.ticks.length  = unit(0.1, "cm"),
+        axis.line = element_line(linewidth = 1.1),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 10),  # Customize legend text size
+        legend.key.size = unit(0.6, "cm")) + # Customize legend key size
+  facet_wrap(~d8phyl)
+
+ggp_ch_abund
+# ggsave(plot = ggp_ch_abund, paste0("C:/code/N24_space_mic_dispersal/results/tr_ch_abund.png"), width = 9, height = 6, dpi = 300)
+```
+
+```{r}
+df %>%
+  mutate(abun = abun * 100) %>% 
+  skim()
+
+df %>%
+  mutate(abun = abun * 100) %>% 
+  summarise(p99 = quantile(abun, 0.99))
+
+df %>%
+  mutate(abun = abun * 100) %>%
+  group_by(d8phyl) %>% 
+  filter(abun >= 0.1) %>%
+  count()
+
+df %>%
+  mutate(abun = abun * 100) %>%
+  group_by(d8phyl) %>% 
+  filter(abun >= 0.25) %>%
+  count()
+  
+df %>%
+  mutate(abun = abun * 100) %>%
+  group_by(d8phyl) %>% 
+  filter(abun >= 0.1,
+         chull_areas <= 500) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+df %>%
+  mutate(abun = abun * 100) %>%
+  group_by(d8phyl) %>% 
+  filter(abun >= 0.1,
+         chull_areas > 5000,
+         chull_areas < 6500) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+df %>%
+  mutate(abun = abun * 100) %>%
+  group_by(d8phyl) %>% 
+  filter(abun >= 0.1,
+         chull_areas > 7000) %>% 
+  count() %>% 
+  arrange(desc(n))
+  
+```
+
+
+
+
+### GCD by Abundance
+```{r}
+ggplot() +
+  geom_jitter(data = df, aes(x = abun, 
+                             y= log(gcd + 0.001))) + # + a small value to avoid -inv
+  labs(x = "Rel. Abundace", y = "GCD log transformed", colour = 'Phylum') +
+  theme_classic()
+
+ggplot() +
+  geom_jitter(data = df, aes(x = abun, y= log(gcd+0.001), 
+                             colour = factor(d8phyl, levels = dominant_phyla))) +
+  scale_color_manual(values = viridis_pal()(8)) +
+  labs(x = "Rel. Abundace", y = "GCD log transformed", colour = 'Phylum') +
+  theme_classic() +
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 10, angle = 60, vjust = .6, color = 'black'),
+        axis.text.y = element_text(size = 10, angle = 60, hjust = 1, vjust = -.3, color = 'black'),
+        axis.ticks.x = element_line(linewidth = 2, lineend = "butt"),
+        axis.ticks.y = element_line(linewidth = 2, lineend = "butt"),
+        axis.ticks.length  = unit(0.1, "cm"),
+        axis.line = element_line(linewidth = 1.1),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 10),  # Customize legend text size
+        legend.key.size = unit(0.6, "cm")) + # Customize legend key size
+  facet_wrap(~d8phyl)
+```
+
+
+## Analysis
+
+```{r}
+hist(df$abun)
+hist(log(df$abun))
+qqnorm(log(df$abun), main='Normal')
+qqline(log(df$abun))
+
+#shapiro.test(log(df$abun))
+ks.test(log(df$abun), 'pnorm')
+
+kruskal.test(df$abun ~ df$Phylum)
+#pairwise.wilcox.test(df$abun, df$Phylum, p.adjust.method = "bonferroni") 
+```
+

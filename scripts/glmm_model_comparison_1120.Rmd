@@ -1,0 +1,367 @@
+---
+title: "Glm for glmm -- model comparison"
+author: "Neisse, Niklas (neisse.n@protonmail.com)"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+date: "2024-11-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## 1. Briefing
+
+This script demonstrates the process of selecting an appropriate model for a subsequent commonality analysis. For our purpose, the commonality analysis is suppose to identify the variation-share of the environmental predictor's effect on soil bacterial Bray-Curtis similarities between spatially wide-ranged samples. Therefore we need to define a base GLM for the commonality analysis. Fundamentally, we want to fit a log link with a Gaussian or Gamma error distribution to represent a distance decay model (DDR). 
+
+1. We first single out a selection of the most important and reduced set of predictors that we will use for all models as a baseline for model comparison.
+2. Then we compare the baseline DDR in its different error distribution against their respective powerlaw models and among eachother based on their AIC.
+3. In the end we check the assumptions (`DHARMa`) and their underlying effect structure (`ggeffects`). 
+
+## 2. Questions 
+1. 
+2. 
+
+### 3.1 Setting the stage 
+
+The following packages are required: `tidyverse`, `vegan`, `glmm.hp`, `partR2`, `skimr`, `MASS`, `DHARMa` , `ggeffects`, `glmmTMB`, `lme4`
+
+```{r Stage, message=FALSE, warning=FALSE, include=FALSE}
+#### Setting the stage ####
+rm(list = ls()) # Remove all objects in the global environment except for ca01
+
+.cran_packages <- c('skimr','tidyverse','vegan','viridis', 'car', 'DHARMa',
+                    'corrplot', 'glmm.hp', 'partR2', 'lme4', 'MASS', 'ggeffects'
+                    ) # Define CRAN packages
+# .bioc_packages <- c('phyloseq') # Define Bioconductor packages
+#'dada2', 'phyloseq', 'DECIPHER', 'phangorn'
+
+.inst <- .cran_packages %in% installed.packages() # Check if CRAN packages are installed
+if(any(!.inst)) {
+  install.packages(.cran_packages[!.inst]) # Install missing CRAN packages
+}
+
+# .inst <- .bioc_packages %in% installed.packages() # Check if Bioconductor packages are installed
+# if(any(!.inst)) {
+#   source("http://bioconductor.org/biocLite.R") # Source Bioconductor installation script
+#   biocLite(.bioc_packages[!.inst], ask = F) # Install missing Bioconductor packages without asking for confirmation
+# }
+
+sapply(c(.cran_packages), require, character.only = TRUE) # Load required packages
+ # , .bioc_packages
+
+set.seed(100) # Set seed for reproducibility
+```
+
+
+### 3.2 Data  
+The dataset `dissected` contains the distances between each sample in terms of bacterial composition (Bray-Curtis), plant composition (Bray-Curtis) and plant traits (Euclidean),as well as differences in pH, water content, carbon, nitrogen, and the CN ratio between sites. A summary of the dataset is shown below.
+
+Side notes: 
+
+1. For our models, we work with B.-C. similarities, meaning that values closer to 1 indicate greater similarity in bacterial community assembly among the samples.
+
+2. Since stepwise forward selection, a crucial stop of our predictor selection using the `step()` function, cannot handle missing values, we omit these observations in the df `df.nona`, reducing the total by about 100 data points to 1,275.
+
+
+```{r data, echo=FALSE, message=FALSE, warning=FALSE}
+## Load the data file and remove the extra column
+dissected          <- read.csv('data/Dissected.csv') %>% dplyr::select(-c('X'))
+## Remove rows with any missing values from the data frame
+df.nona            <- na.omit(dissected)
+df.nona$bray.dis   <- df.nona$bray
+df.nona$bray.p_dis <- df.nona$bray.p
+# changing dissimilarity to similarity to match distance decay model
+df.nona$bray       <- 1-df.nona$bray 
+df.nona$bray.p     <- 1-df.nona$bray.p
+df.nona$dist_log   <- log(df.nona$dist_m+0.001)
+
+dissected          <- dissected %>% 
+  mutate(      bray = 1-bray,
+             bray.p = 1-bray.p)
+
+## Display specific summary statistics
+skim(dissected[,8:ncol(dissected)])[c(2,4:6,12)]
+```
+
+### 3.3 Correlation of the predictors
+This section examines the three major selective processes that influence soil bacterial community assembly. Most interactions between predictors within the same selective process and among different processes do not show significant correlation. The only exception is the strong correlation between the differences in Carbon and Nitrogen. This finding allows us to confidently remove one of these predictors from the model.
+
+Note: Delta distance and delta log-transformed distance are included to assess any differences in correlation with other predictors. The results show differences in effect, but none of the correlations are very high. Naturally, the two distances correlate strongly, so only one will be included in the respective models. This approach is intentional.
+
+
+```{r correlation}
+
+corrplot(cor(df.nona[c(8, 10:16, 19)]), 
+         type = "upper", method = "square", diag = FALSE, 
+         addCoef.col = "darkgrey", number.cex = .7,
+         tl.srt = 45, tl.cex = 1, tl.offset = 1)
+
+```
+
+## 4. Models 
+### 4.1 Model Structure
+We construct a generalized linear model to describe the effects of predictors representing environmental selection processes and dispersal on the differences in bacterial communities between observations, using a log link function.
+
+Two sets of models are presented. The first set follows a Gaussian error distribution, while the second set follows a Gamma distribution. Within each set, we compare a model with a normal distance predictor to a power-law model with a log-transformed distance predictor.
+
+Question: Should we remove either Carbon (C) or Nitrogen (N) before running the models? If so, on what basis do we choose which one to remove?
+
+```{r model structure, message=FALSE, warning=FALSE}
+
+# GLM_Gaus_111
+glm_gaus_111 <- glm(formula = bray ~
+                      delta_pH + dist_m + delta_c + eucl.pbnp + 
+                      delta_whc + delta_n + bray.p + delta_cnr,
+                    family = gaussian(link = "log"), data = df.nona, 
+                    na.action = na.exclude)
+sum_glm_gaus_111 <- summary(glm_gaus_111)
+
+# GLM_Gaus_112
+glm_gaus_112 <- glm(formula = bray ~
+                      delta_pH + dist_log + delta_c + eucl.pbnp + 
+                      delta_whc + delta_n + bray.p + delta_cnr, 
+                    family = gaussian(link = "log"), data = df.nona, 
+                    na.action = na.exclude)
+sum_glm_gaus_112 <- summary(glm_gaus_112)
+
+# GLM_Gamm_OG_121
+glm_gamm_121 <- glm(formula = bray ~ 
+                      delta_pH + dist_m + delta_c + eucl.pbnp + 
+                      delta_whc + delta_n + bray.p + delta_cnr, 
+                    family = Gamma(link = "log"), data = df.nona, 
+                    na.action = na.exclude)
+sum_glm_gamm_121 <- summary(glm_gamm_121)
+
+# GLM_Gamm_OG_122
+glm_gamm_122 <- glm(formula = bray ~
+                      delta_pH + dist_log + delta_c + eucl.pbnp + 
+                      delta_whc + delta_n + bray.p + delta_cnr, 
+                    family = Gamma(link = "log"), data = df.nona, 
+                    na.action = na.exclude)
+sum_glm_gamm_122 <- summary(glm_gamm_122)
+
+
+```
+
+
+Comparing the AIC values indicates that the Gamma error distribution with the log-transformed distance as a predictor explains the most variation in the soil bacteria. Therefore, we base all subsequent analyses on this model.
+
+Note: I'm not sure how we concluded that the normal distribution was better last time. It wasn't, and it still isn't haha. 
+
+```{r sum 1, message=FALSE, warning=FALSE, include=FALSE}
+data.frame(
+  model          = c(
+    rep("GLM", 4)),
+  og_model       = c(
+    rep("comp_pred",4)),
+  family         = c(
+    c(rep("Gaus",2), rep("Gamm",2))),
+  Power_law      = c(
+    rep(c("-", "+"),2)),
+  aic            = c(
+    sum_glm_gaus_111$aic,
+    sum_glm_gaus_112$aic,
+    sum_glm_gamm_121$aic,
+    sum_glm_gamm_122$aic),
+  null_deviance  = c(
+    sum_glm_gaus_111$null.deviance,
+    sum_glm_gaus_112$null.deviance,
+    sum_glm_gamm_121$null.deviance,
+    sum_glm_gamm_122$null.deviance),
+  null_df        = c(
+    sum_glm_gaus_111$df.null,
+    sum_glm_gaus_112$df.null,
+    sum_glm_gamm_121$df.null,
+    sum_glm_gamm_122$df.null),
+  resid_deviance = c(
+    sum_glm_gaus_111$deviance,
+    sum_glm_gaus_112$deviance,
+    sum_glm_gamm_121$deviance,
+    sum_glm_gamm_122$deviance),
+  resid_df       = c(
+    sum_glm_gaus_111$df.residual,
+    sum_glm_gaus_112$df.residual,
+    sum_glm_gamm_121$df.residual,
+    sum_glm_gamm_122$df.residual)) %>% 
+  arrange(desc(.$aic))
+```
+
+#### 4.2 Model selection
+Having chosen the best model structure, we now focus on selecting the predictors. ince nitrogen and carbon are highly correlated and we aim to reduce the number of predictors, we will examine the nutrition-related predictors to determine which individual effects explain the most variation on their own.
+
+
+```{r nutrition predictor selection, message=FALSE, warning=FALSE}
+glm_gamm_nps1 <- glm(formula = bray ~ delta_c,
+                     family = Gamma(link = "log"), data = df.nona, 
+                     na.action = na.exclude)
+sum_glm_gamm_nps1 <- summary(glm_gamm_nps1)
+
+glm_gamm_nps2 <- glm(formula = bray ~ delta_n,
+                     family = Gamma(link = "log"), data = df.nona, 
+                     na.action = na.exclude)
+sum_glm_gamm_nps2 <- summary(glm_gamm_nps2)
+
+glm_gamm_nps3 <- glm(formula = bray ~ delta_cnr,
+                     family = Gamma(link = "log"), data = df.nona, 
+                     na.action = na.exclude)
+sum_glm_gamm_nps3 <- summary(glm_gamm_nps3)
+
+
+```
+
+Carbon appears to explain the most variation among the nutrition predictors, so we can confidently remove nitrogen from the model due to their high correlation. 
+
+Note: Since the CN ratio does not show a strong correlation with the others, we may either keep it to account for its effect or remove it to maintain only one representative of nutrition. Following this same reasoning, we could also consider removing pH and water holding capacity, as they represent the physical aspects of selection processes.
+
+```{r sum 2,  echo=FALSE, message=FALSE, warning=FALSE}
+data.frame(
+  model          = c(
+    rep("GLM; Gamma; power law", 3)),
+  Nutrition      = c(
+    c("Δ Carbon" ,'Δ Nitrogen', 'Δ CN ratio')),
+  aic            = c(
+    sum_glm_gamm_nps1$aic,
+    sum_glm_gamm_nps2$aic,
+    sum_glm_gamm_nps3$aic),
+  null_deviance  = c(
+    sum_glm_gamm_nps1$null.deviance,
+    sum_glm_gamm_nps2$null.deviance,
+    sum_glm_gamm_nps3$null.deviance),
+  null_df        = c(
+    sum_glm_gamm_nps1$df.null,
+    sum_glm_gamm_nps2$df.null,
+    sum_glm_gamm_nps3$df.null),
+  resid_deviance = c(
+    sum_glm_gamm_nps1$deviance,
+    sum_glm_gamm_nps2$deviance,
+    sum_glm_gamm_nps3$deviance),
+  resid_df       = c(
+    sum_glm_gamm_nps1$df.residual,
+    sum_glm_gamm_nps2$df.residual,
+    sum_glm_gamm_nps3$df.residual)) %>% 
+  arrange(desc(.$aic))
+```
+
+#### 4.3 Bidirectional predictor selection
+
+```{r predictor selection, echo=TRUE, message=FALSE, warning=FALSE, include=FALSE}
+# Alpha, intercept only model
+glm_gamm_a <- glm(formula = bray ~ 1,
+                  family = Gamma(link = "log"), data = df.nona, 
+                  na.action = na.exclude)
+
+# Omega, all predictors with their interactions
+glm_gamm_o <- glm(formula = bray ~
+                    delta_pH  * dist_log * delta_c * eucl.pbnp * 
+                    delta_whc * bray.p   * delta_cnr,
+                  family = Gamma(link = "log"), data = df.nona, 
+                  na.action = na.exclude)
+
+# Bidirectional predictor selection 
+glm_gamm_step <- step(glm_gamm_a,
+                      scope = list(lower = glm_gamm_a, upper = glm_gamm_o), 
+                      direction = "both", na.action = na.exclude)
+```
+
+
+```{r predictor selection 2, echo=TRUE, message=FALSE, warning=FALSE, include=TRUE}
+
+
+# Selected model
+summary(glm_gamm_step)
+
+glm_gamm_sel <- glm(formula = bray ~ 
+                      delta_pH  + delta_c   + dist_log + 
+                      delta_cnr + delta_whc + bray.p   + 
+                      delta_pH :dist_log    + delta_pH:delta_c   + 
+                      delta_pH :delta_cnr   + dist_log:bray.p    + 
+                      delta_c  :delta_whc   + delta_pH:delta_whc + 
+                      delta_pH :bray.p      + delta_c :delta_cnr +
+                      delta_cnr:delta_whc   + 
+                      delta_pH:delta_c  :delta_cnr + 
+                      delta_c :delta_cnr:delta_whc,
+                    family = Gamma(link = "log"), 
+                    data = df.nona, na.action = na.exclude)
+
+# Selected model without the 3way interactions
+glm_gamm_seln3 <- glm(formula = bray ~ 
+                        delta_pH  + delta_c   + dist_log + 
+                        delta_cnr + delta_whc + bray.p   + 
+                        delta_pH :dist_log    + delta_pH:delta_c   + 
+                        delta_pH :delta_cnr   + dist_log:bray.p    + 
+                        delta_c  :delta_whc   + delta_pH:delta_whc + 
+                        delta_pH :bray.p      + delta_c :delta_cnr +
+                        delta_cnr:delta_whc,
+                      family = Gamma(link = "log"), 
+                      data = df.nona, na.action = na.exclude)
+
+```
+
+## 6. Assumptions
+
+using `simulateResiduals` and `plotResiduals`
+
+```{r assumptions, echo=FALSE, message=FALSE, warning=FALSE}
+sim_out_gamm <- simulateResiduals(fittedModel = glm_gamm_seln3, plot = F)
+plot(sim_out_gamm)
+testOutliers(glm_gamm_seln3)
+plotResiduals(sim_out_gamm, form = df.nona$dist_log)
+plotResiduals(sim_out_gamm, form = df.nona$delta_pH)
+plotResiduals(sim_out_gamm, form = df.nona$bray.p)
+plotResiduals(sim_out_gamm, form = df.nona$delta_c)
+plotResiduals(sim_out_gamm, form = df.nona$delta_whc)
+plotResiduals(sim_out_gamm, form = df.nona$delta_cnr)
+plotResiduals(sim_out_gamm, form = df.nona$eucl.pbnp)
+
+```
+
+### 6.1 Effect plots
+
+```{r eff plot 0, eval=FALSE, message=FALSE, warning=FALSE, include=T}
+predict_response(glm_gamm_seln3)
+predict_response(glm_gamm_seln3, terms = c("predictor_main", "predictor_color"))
+```
+
+
+Note: 
+1. The effect of water holding capacity in interaction with pH appears odd
+
+
+```{r effect plot, echo=FALSE, message=FALSE, warning=FALSE}
+glm_gamm_predres0  <- predict_response(glm_gamm_seln3)
+
+plot(predict_response(glm_gamm_seln3, terms = c("delta_pH",  "dist_log")),
+     show_data = T)
+
+plot(predict_response(glm_gamm_seln3, terms = c("delta_c",   "delta_pH")),
+     show_data = T)
+
+plot(predict_response(glm_gamm_seln3, terms = c("delta_cnr", "delta_pH")),
+     show_data = T)
+
+plot(predict_response(glm_gamm_seln3, terms = c("bray.p",    "dist_log")), 
+     show_data = T)
+
+plot(predict_response(glm_gamm_seln3, terms = c("delta_c",   "delta_whc")), 
+     show_data = T)
+
+plot(predict_response(glm_gamm_seln3, terms = c("delta_whc", "delta_pH")), 
+     show_data = T)
+
+plot(predict_response(glm_gamm_seln3, terms = c("bray.p",    "delta_pH")), 
+     show_data = T)
+
+plot(predict_response(glm_gamm_seln3, terms = c("delta_c",   "delta_cnr")), 
+     show_data = T)
+
+plot(predict_response(glm_gamm_seln3, terms = c("delta_cnr", "delta_whc")), 
+     show_data = T)
+
+```

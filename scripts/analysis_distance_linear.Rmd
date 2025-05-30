@@ -1,0 +1,1199 @@
+---
+title: "Analysis Distances Linear"
+author: "Niklas Neisse; neisse.n@protonmail.com"
+date: "2025-01-26"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Briefing
+
+This script shows the process form selecting an appropriate model to the subsequent commonality analysis. For our purpose, the commonality analysis identifies the variation-share of the effect of environmental predictor's on soil bacterial Bray-Curtis similarities between samples of an spatial gradient. Therefore we here define a baseline GLM for the commonality analysis that fits a log link with a Gaussian or Gamma error distribution representing a distance decay model (DDR). 
+
+1. We first compare the baseline DDR in its different error distribution against their respective powerlaw models and among eachother based on their AIC.
+2. Then we single out a selection of the most important and reduced set of predictors.
+3. In the end we check the assumptions (`DHARMa`) and their underlying effect structure (`ggeffects`). 
+4. Lastly we run the commonality analysis
+
+
+## 2. Questions 
+1. How do we incorporate the linear analysis with the single Manhattan distances?
+2. 
+
+
+
+### Setting the stage 
+
+<details>
+  <summary>Expand for details on packages and more settings.</summary>
+
+The following packages are required: `tidyverse`, `vegan`, `glmm.hp`, `partR2`, `skimr`, `MASS`, `DHARMa` , `ggeffects`, `glmmTMB`, `lme4`, `glmm.hp`, `pscl`
+
+```{r Stage, echo=TRUE, message=FALSE, warning=FALSE}
+#### Setting the stage ####
+# Remove all objects in the global environment
+# rm(list = ls()) 
+
+# Set seed for reproducibility
+set.seed(100) 
+
+# Set directory pathways
+dir_data <- 'path/to/N24_space_mic_dispersal/data/'
+dir_resu <- 'path/to/N24_space_mic_dispersal/results/'
+
+# Define CRAN packages
+.cran_packages <- c(
+  'tidyverse', 'glmm.hp',  'skimr', 'viridis', 'vegan',  'car', 
+  'ggeffects', 'corrplot', 'lme4',  'partR2',  'DHARMa', 'MASS',
+  'patchwork', 'glmm.hp',  'pscl',  'ggExtra', 'janitor', 'eulerr') 
+
+# Define Bioconductor packages: 
+#  other bioconductor packages include: 
+#  'dada2', 'phyloseq', 'DECIPHER', 'phangorn'
+# .bioc_packages <- c('phyloseq')  
+
+# Install missing CRAN packages
+.inst <- .cran_packages %in% installed.packages() 
+if(any(!.inst)) {
+  install.packages(.cran_packages[!.inst]) 
+}
+
+# # Check if Bioconductor packages are installed
+# .inst <- .bioc_packages %in% installed.packages() 
+# if(any(!.inst)) {
+#   # Source Bioconductor installation script
+#   source("http://bioconductor.org/biocLite.R") 
+#   # Install missing Bioconductor packages without asking for confirmation
+#   biocLite(.bioc_packages[!.inst], ask = F) 
+# }
+
+# Load required packages
+#  add if necessary: ', .bioc_packages'
+invisible(sapply(c(.cran_packages), require, character.only = TRUE))
+invisible(sapply(c(.cran_packages), function(pkg) {
+  # Check if the package is loaded
+  is_loaded <- isNamespaceLoaded(pkg)
+  
+  # Get the package version
+  version <- as.character(packageVersion(pkg))  # Convert version to character
+  
+  # Print the result
+  cat(pkg, "Loaded:", is_loaded, "- Version:", version, "\n")
+}))
+ 
+```
+```{r check_dir, message=FALSE, warning=FALSE, include=FALSE}
+dir_wd   <- file.path('C:', 'code', 'eddsbc')
+dir_data <- file.path(dir_wd, 'data')
+dir_resu <- file.path(dir_wd, 'output')
+```
+
+
+## 3 Data  
+The dataset `dissected` contains the distances between each sample in terms of bacterial composition (Bray-Curtis), plant composition (Bray-Curtis), plant traits (Euclidean), and physio-chemical soil properties (Euclidean). A summary of the dataset is shown below.
+
+Side notes: 
+
+1. For our models, we work with B.-C. similarities, meaning that values closer to 1 indicate greater similarity in bacterial community assembly among the samples.
+
+2. Since stepwise forward selection, a crucial stop of our predictor selection using the `step()` function, cannot handle missing values, we omit these observations in the df `dist_nona_df`, reducing the total by about 100 data points to 1,275.
+
+<details>
+  <summary>Expand for data summary.</summary>
+
+```{r data, echo=TRUE, message=FALSE, warning=FALSE}
+## Load the data
+distances_df <- read.csv(paste0(dir_data, 'distances_df.csv')) %>% 
+  # changing dissimilarity to similarity to match distance decay model
+  mutate(bac_bray_dis   = .$bac_bray,
+         plant_bray_dis = .$plant_bray,
+         bac_bray       = 1-.$bac_bray,
+         plant_bray     = 1-.$plant_bray,
+         coor_haver_log = log(.$coor_haver+0.001))
+
+skim(distances_df)
+
+# Remove rows with any missing values from the data frame
+dist_nona_df <- na.omit(distances_df)
+
+# Only the 4 processes
+# names(dist_nona_df)
+dist_4way_df <- dist_nona_df %>% 
+  dplyr::select('dist_bin', 'bac_bray',
+                'coor_haver_log', 'coor_haver', 
+                'plant_bray', 'p_trait_eucl', 'physchem_eucl')
+
+
+```
+</details>
+
+#### 3.2.1 Correlation in predictors
+On the path to our model we first checked for any correlations of the explanatory variables.  
+
+<details>
+  <summary>Expand for explanatory variable correlation plot.</summary>
+```{r Explanatory correlations}
+# names(dist_nona_df)
+
+corrplot(cor(dist_4way_df[
+  c('coor_haver_log', 
+    'plant_bray', 'p_trait_eucl', 'physchem_eucl')]), 
+  type = "upper", method = "square", diag = FALSE, 
+  addCoef.col = "white", number.cex = .7,
+  tl.srt = 45, tl.cex = 1, tl.offset = 1)
+
+
+corrplot(cor(dist_nona_df[c(
+  'p_trait_eucl', 
+  'pt_biomass_manh', 'pt_cov_bare_manh', 'pt_cov_litter_manh', 
+  'pt_cov_moss_manh', 'pt_cov_senesc_manh', 'pt_sla_manh')]), 
+         type = "upper", method = "square", diag = FALSE, 
+         addCoef.col = "white", number.cex = .7,
+         tl.srt = 45, tl.cex = 1, tl.offset = 1)
+
+
+corrplot(cor(dist_nona_df[c(
+  'physchem_eucl', 
+  'pc_c_manh', 'pc_cnr_manh', 'pc_n_manh', 
+  'pc_ph_manh', 'pc_soil_moist_manh')]), 
+         type = "upper", method = "square", diag = FALSE, 
+         addCoef.col = "white", number.cex = .7,
+         tl.srt = 45, tl.cex = 1, tl.offset = 1)
+
+```
+
+## 4. Models 
+### 4.1 Model Structure
+We construct a generalized linear model to describe the effects of predictors representing environmental selection processes and dispersal on the differences in bacterial communities between observations, using a log link function.
+
+Two sets of models are presented. The first set follows a Gaussian error distribution, while the second set follows a Gamma distribution. Within each set, we compare a model with a normal distance predictor to a power-law model with a log-transformed distance predictor.
+
+```{r model structure, message=FALSE, warning=FALSE}
+# names(dist_nona_df)
+
+# glm_4w_gaus_1
+glm_4w_gaus_1 <- glm(formula = bac_bray ~
+                       coor_haver + plant_bray + p_trait_eucl + physchem_eucl,
+                     family = gaussian(link = "log"), data = dist_nona_df, 
+                     na.action = na.exclude)
+sum_glm_4w_gaus_1 <- summary(glm_4w_gaus_1)
+
+# glm_4w_gaus_2
+glm_4w_gaus_2 <- glm(formula = bac_bray ~
+                       coor_haver_log + plant_bray + p_trait_eucl + physchem_eucl, 
+                     family = gaussian(link = "log"), data = dist_nona_df, 
+                     na.action = na.exclude)
+sum_glm_4w_gaus_2 <- summary(glm_4w_gaus_2)
+
+# glm_4w_gamm_1
+glm_4w_gamm_1 <- glm(formula = bac_bray ~
+                        coor_haver + plant_bray + p_trait_eucl + physchem_eucl, 
+                     family = Gamma(link = "log"), data = dist_nona_df, 
+                     na.action = na.exclude)
+sum_glm_4w_gamm_1 <- summary(glm_4w_gamm_1)
+
+# glm_4w_gamm_2
+glm_4w_gamm_2 <- glm(formula = bac_bray ~
+                       coor_haver_log + plant_bray + p_trait_eucl + physchem_eucl, 
+                     family = Gamma(link = "log"), data = dist_nona_df, 
+                     na.action = na.exclude)
+sum_glm_4w_gamm_2 <- summary(glm_4w_gamm_2)
+
+
+```
+
+
+Comparing the AIC values indicates that the Gamma error distribution with the log-transformed distance as a predictor explains the most variation in the soil bacteria. Therefore, we base all subsequent analyses on this model.
+
+
+
+
+
+```{r sum 1, message=FALSE, warning=FALSE, include=T}
+data.frame(
+  model          = c(
+    rep("GLM", 4)),
+  id       = c(
+    rep("4way",4)),
+  fam         = c(
+    c(rep("Gaus",2), rep("Gamm",2))),
+  Power_law      = c(
+    rep(c("-", "+"),2)),
+  aic            = c(
+    sum_glm_4w_gaus_1$aic,
+    sum_glm_4w_gaus_2$aic,
+    sum_glm_4w_gamm_1$aic,
+    sum_glm_4w_gamm_2$aic),
+  `0 deviance`  = c(
+    sum_glm_4w_gaus_1$null.deviance,
+    sum_glm_4w_gaus_2$null.deviance,
+    sum_glm_4w_gamm_1$null.deviance,
+    sum_glm_4w_gamm_2$null.deviance),
+  `0 df`        = c(
+    sum_glm_4w_gaus_1$df.null,
+    sum_glm_4w_gaus_2$df.null,
+    sum_glm_4w_gamm_1$df.null,
+    sum_glm_4w_gamm_2$df.null),
+  `res deviance` = c(
+    sum_glm_4w_gaus_1$deviance,
+    sum_glm_4w_gaus_2$deviance,
+    sum_glm_4w_gamm_1$deviance,
+    sum_glm_4w_gamm_2$deviance),
+  `res df`     = c(
+    sum_glm_4w_gaus_1$df.residual,
+    sum_glm_4w_gaus_2$df.residual,
+    sum_glm_4w_gamm_1$df.residual,
+    sum_glm_4w_gamm_2$df.residual)) %>% 
+  arrange(.$aic)
+```
+
+#### 4.3 Bidirectional predictor selection
+
+```{r predictor selection, echo=TRUE, message=FALSE, warning=FALSE, include=FALSE}
+# Alpha, intercept only model
+glm_gamm_4way_a <- glm(formula = bac_bray ~ 1,
+                      family = Gamma(link = "log"), data = dist_nona_df, 
+                      na.action = na.exclude)
+
+# Omega, all predictors with their interactions
+glm_gamm_4way_o <- glm(formula = bac_bray ~
+                       coor_haver_log * plant_bray * p_trait_eucl * physchem_eucl, 
+                       family = Gamma(link = "log"), data = dist_nona_df, 
+                       na.action = na.exclude)
+
+# Bidirectional predictor selection 
+glm_gamm_4way_step <- step(glm_gamm_4way_a,
+                        scope = list(
+                          lower = glm_gamm_4way_a, upper = glm_gamm_4way_o), 
+                        direction = "both", na.action = na.exclude)
+```
+
+The bi-directional selection suggests that the interaction of the physico-chemical euclidean distance and the plant abundance Bray-Curtis distance is important for the model. Furthermore, the plant traits do not seem contribute to the models fit.
+
+Nevertheless we include the plant traits in our model to make it directly compatible to our variance partitioning. The full 4-way model structure is the following:
+
+```{r message=FALSE, warning=FALSE}
+# Specifying the final 4way model
+glm_4w_gamm2 <- glm(formula = bac_bray ~
+                      physchem_eucl + coor_haver_log + 
+                      plant_bray + p_trait_eucl + 
+                      physchem_eucl:plant_bray, 
+                    family = Gamma(link = "log"), 
+                    data = dist_nona_df, 
+                    na.action = na.exclude)
+
+summary(glm_4w_gamm2)
+pR2(glm_4w_gamm2)
+
+
+```
+
+
+
+
+## 6. Assumptions
+
+using `simulateResiduals` and `plotResiduals`
+
+```{r assumptions, echo=TRUE, message=FALSE, warning=FALSE}
+sim_out_4w_gamm2 <- DHARMa::simulateResiduals(
+  fittedModel = glm_4w_gamm2, plot = F)
+plot(sim_out_4w_gamm2)
+testOutliers(glm_4w_gamm2)
+plotResiduals(sim_out_4w_gamm2, form = dist_nona_df$physchem_eucl)
+plotResiduals(sim_out_4w_gamm2, form = dist_nona_df$coor_haver_log)
+plotResiduals(sim_out_4w_gamm2, form = dist_nona_df$plant_bray)
+plotResiduals(sim_out_4w_gamm2, form = dist_nona_df$p_trait_eucl)
+
+```
+
+### 6.1 Effect plots
+
+```{r eff plot 0, eval=FALSE, message=FALSE, warning=FALSE, include=T}
+predict_response(glm_gamm_seln3)
+predict_response(glm_gamm_seln3, terms = c("predictor_main", "predictor_color"))
+```
+
+
+
+
+```{r effect plot, echo=TRUE, message=FALSE, warning=FALSE}
+pred_res_4w_gamm2  <- predict_response(glm_4w_gamm2)
+
+plot(predict_response(glm_4w_gamm2, terms = c("physchem_eucl", "plant_bray")),
+     show_data = T)
+
+plot(predict_response(glm_4w_gamm2, terms = c("coor_haver_log", "physchem_eucl")),
+     show_data = T)
+
+plot(predict_response(glm_4w_gamm2, terms = c("plant_bray", "coor_haver_log")),
+     show_data = T)
+
+plot(predict_response(glm_4w_gamm2, terms = c("p_trait_eucl", "coor_haver_log")), 
+     show_data = T)
+
+
+```
+
+
+## Communality analysis 
+
+R2m (marginal R²): variance explained by fixed effects only.
+R2c (conditional R²): variance explained by both fixed and random effects. As I don't have any random effect they are the same. 
+
+Regarding the family of the estimations:
+lognormal is the best:
+1. it explains the most variance, thus the model fit is very good.
+2. the assumption of a right-skewed response is met 
+3. the assumption of no 0 values is met
+
+
+Estimations:
+Unique:	        The variance explained uniquely by that predictor.
+Average.share:	Mean shared contribution across all model permutations.
+Individual:   	Sum of Unique + Average.share (total importance).
+I.perc(%):    	Percentage of total R² accounted for by this variable.
+
+A negative unique value (e.g., -0.0005) indicates essentially no unique contribution, possibly due to multicollinearity or noise.
+
+
+
+```{r CA 4w}
+ca_4w <- glmm.hp::glmm.hp(glm_4w_gamm2, type = "adjR2", commonality = T)
+ca_4w_T <- glmm.hp::glmm.hp(glm_4w_gamm2, type = "adjR2", commonality = F)
+glmm.hp::plot.glmmhp(ca_4w_T)
+ca_4w_T
+ca_4w
+
+fit <- euler(c(
+  "A"       = 0.1513, # physchem_eucl
+  "B"       = 0.0884, # coor_haver_log
+  "C"       = 0.0068, # plant_bray
+  "D"       = 0.0000, # p_trait_eucl
+  "E"       = 0.0113, # physchem_eucl:plant_bray
+  "A&B"     = 0.1497,
+  "A&C"     = 0.0274,
+  "A&D"     = 0.0002,
+  "A&E"     = 0.0129,
+  "A&B&C"   = 0.1557,
+  "A&B&D"   = 0.0006,
+  "A&C&D"   = 0.0006,
+  "B&C&D"   = 0.0001,
+  "A&B&E"   = 0.0949,
+  "B&B&E"   = 0.0093,
+  "A&D&E"   = 0.0002,
+  "A&B&C&D" = 0.0025,
+  "B&C&D&E" = 0.0002
+))
+
+fit2 <- euler(c(
+  "A"       = 0.151, # physchem_eucl
+  "B"       = 0.088, # coor_haver_log
+  "C"       = 0.007, # plant_bray
+#  "D"       = 0.000, # p_trait_eucl
+  "E"       = 0.011, # physchem_eucl:plant_bray
+  "A&B"     = 0.150,
+  "A&C"     = 0.027,
+#  "A&D"     = 0.000,
+  "A&E"     = 0.013,
+  "A&B&C"   = 0.156,
+  "A&B&D"   = 0.001,
+  "A&C&D"   = 0.001,
+#  "B&C&D"   = 0.000,
+  "A&B&E"   = 0.095,
+  "B&B&E"   = 0.009,
+#  "A&D&E"   = 0.000,
+  "A&B&C&D" = 0.003
+#  "B&C&D&E" = 0.000
+))
+
+mod_ca_eu <- euler(c(
+  "A"       = 0.15, # physchem_eucl
+  "B"       = 0.09, # coor_haver_log
+  "C"       = 0.01, # plant_bray
+  "E"       = 0.01, # physchem_eucl:plant_bray
+  "A&B"     = 0.15,
+  "A&C"     = 0.03,
+  "A&E"     = 0.01,
+  "A&B&C"   = 0.16,
+  "A&B&E"   = 0.10,
+  "B&B&E"   = 0.01
+))
+
+p_ca_eu <- plot(mod_ca_eu,
+     quantities = TRUE,
+     fills = list(fill = viridis::viridis(4), alpha = 0.6),
+     labels = list(font = 2),
+     main = "Variance Partitioning (Euler Diagram)")
+
+# ggsave(plot = p_ca_eu, paste0(dir_resu, "ca_eu.png"), width = 5.5, height = 6, dpi = 300)
+
+0.01/2 + 0.1/3 + 0.15/2 + 0.16/3+ 0.03/2
+0.01/2 + 0.1/3 + 0.15/2 + 0.16/3+ 0/2 
+0.16/3 + 0.03/2 
+0.01/2 + 0.01/2 + 0.1/3
+
+```
+
+
+```{r}
+# # Define metrics
+# mod_ca_metrics <- c("Unique", "Average.share", "Individual", "I.perc(%)")
+# mod_ca_n_metrics <- length(mod_ca_metrics)
+# mod_ca_n_perm <- 10000
+# set.seed(123)
+# 
+# # Step 1: Observed values for all metrics
+# mod_ca_observed_all <- ca_4w_T$lognormal[, mod_ca_metrics]
+# 
+# # Step 2: Null array (3D) to store permutations for all metrics
+# mod_ca_null_distributions <- array(
+#   NA, dim = c(nrow(mod_ca_observed_all), mod_ca_n_perm, mod_ca_n_metrics),
+#   dimnames = list(rownames(mod_ca_observed_all), NULL, mod_ca_metrics))
+# 
+# # Step 3: Permutation loop
+# for (i in 1:mod_ca_n_perm) {
+#   # Permute the response variable
+#   dist_4way_df$mod_ca_bac_bray_perm <- sample(dist_4way_df$bac_bray)
+#   
+#   # Fit model with permuted response
+#   mod_ca_perm_result <- glmm.hp(
+#     glm(
+#       formula = mod_ca_bac_bray_perm ~ physchem_eucl + coor_haver_log + 
+#         plant_bray + p_trait_eucl + physchem_eucl:plant_bray,
+#       family = Gamma(link = "log"),
+#       data = dist_4way_df,
+#       na.action = na.exclude),
+#     type = "adjR2")
+#   
+#   # Store values for each metric
+#   for (m in mod_ca_metrics) {
+#     mod_ca_null_distributions[, i, m] <- mod_ca_perm_result$lognormal[, m]
+#   }
+# }
+# 
+# # Step 4: Compute p-values for all metrics
+# mod_ca_results_list <- list()
+# 
+# for (m in mod_ca_metrics) {
+#   mod_ca_observed_vals <- mod_ca_observed_all[, m]
+#   mod_ca_null_matrix   <- mod_ca_null_distributions[, , m]
+#   
+#   # Compute p-values
+#   mod_ca_p_vals <- sapply(1:length(mod_ca_observed_vals), function(i) {
+#     mean(mod_ca_null_matrix[i, ] >= mod_ca_observed_vals[i], na.rm = TRUE)
+#     })
+#   
+#   # Compute mean of null distribution
+#   mod_ca_null_means <- rowMeans(mod_ca_null_matrix, na.rm = TRUE)
+#   
+#   # Create result data frame
+#   mod_ca_results_df <- data.frame(
+#     variable   = rownames(mod_ca_observed_all),
+#     observed   = mod_ca_observed_vals,
+#     null_mean  = mod_ca_null_means,
+#     p_value    = mod_ca_p_vals)
+#   
+#   mod_ca_results_list[[m]] <- mod_ca_results_df
+# }
+# 
+# write.csv(as.data.frame.table(mod_ca_null_distributions, responseName = "value") %>%
+#   rename(variable = Var1, permutation = Var2, metric = Var3) %>%
+#   mutate(permutation = as.integer(permutation)),
+#   file.path(dir_data, paste0('mod_ca_perm_all_10000.csv')))
+# 
+# bind_rows(mod_ca_results_list, .id = "metric") %>% as.data.frame() %>% 
+#   write.csv(file.path(dir_data, paste0('mod_ca_perm_res_all_10000.csv')),
+#             row.names = F)
+
+mod_ca_list_all_10000_df <- read.csv(
+  file.path(dir_data, paste0('mod_ca_perm_all_10000.csv')))
+
+
+mod_ca_results_all_10000_df <- read.csv(
+  file.path(dir_data, paste0('mod_ca_perm_res_all_10000.csv')))
+
+```
+
+
+
+### 7. Plots
+
+#### Distance Decaly Relation
+```{r DDR plot, message=FALSE, warning=FALSE}
+# Create a new data frame with a range of values for 'coor_haver_log'
+p_dist_range <- seq(
+  min(dist_nona_df$coor_haver_log), 
+  max(dist_nona_df$coor_haver_log), length.out = 100)
+
+# Create a new data frame with these values and the other variables fixed 
+p_dist_ndata <- data.frame(
+  coor_haver_log = p_dist_range,
+  physchem_eucl  = mean(dist_nona_df$physchem_eucl, na.rm = TRUE), 
+  plant_bray     = mean(dist_nona_df$plant_bray, na.rm = TRUE),  
+  p_trait_eucl   = mean(dist_nona_df$p_trait_eucl, na.rm = TRUE) 
+)
+
+# Predict the response using the glm model
+p_dist_pred <- predict(
+  glm_4w_gamm2, 
+  newdata = p_dist_ndata,
+  # Return the standard errors
+  se.fit = TRUE, 
+  # Prediction on the scale of the link function (log scale for Gamma)
+  type = "link"    
+)
+
+# Convert the predictions from log scale back to the original scale (if using Gamma with log link)
+p_dist_pred_values <- exp(p_dist_pred$fit)
+
+# Calculate the upper and lower bounds for the 95% confidence interval
+p_dist_upper <- exp(p_dist_pred$fit + 1.96 * p_dist_pred$se.fit)
+p_dist_lower <- exp(p_dist_pred$fit - 1.96 * p_dist_pred$se.fit)
+
+# Add the predictions and confidence intervals to the new_data
+p_dist_ndata <- p_dist_ndata %>%
+  mutate(
+    predicted = p_dist_pred_values,
+    upper_bound = p_dist_upper,
+    lower_bound = p_dist_lower
+  )
+
+# names(dist_4way_df)
+
+dist_4way_df %>% 
+  group_by(dist_bin) %>% 
+  summarise(n())
+
+# Plot the effect of distance on bacterial bray 
+# Estimates are from the 4way model
+# predictions with mean for the other predictors
+# showing the 95% Confidence interval
+ggp_ddr_4w <- ggplot() +
+  geom_point(
+    data = dist_4way_df, 
+    aes(y = bac_bray, x = coor_haver_log, color = as.factor(dist_bin)),
+    alpha = 0.5
+  ) +
+  scale_color_manual(
+    values = c('#B33C00', '#00B382', '#0072B2'),
+    labels = c(
+      'Within Plot\n   n = 48', 
+      'Within Site\n   n = 577', 
+      'Between Sites\n   n = 650'),
+    # Change shape 
+    guide = guide_legend(override.aes = list(shape = 15, linetype = 1))
+    ) + 
+  geom_line(
+    data = p_dist_ndata, 
+    aes(y = predicted, x = coor_haver_log), color = "#4F4F4F"
+  ) +
+  geom_ribbon(
+    data = p_dist_ndata,
+    aes(x = coor_haver_log, ymin = lower_bound, ymax = upper_bound), 
+    fill = "black", alpha = 0.2
+  ) +
+  scale_x_continuous(
+    limits = c(0, 14),
+    breaks = seq(0, 14, by = 2),
+    guide = guide_axis(minor.ticks = T)
+    ) +
+  scale_y_continuous(
+    limits       = c(0, 0.8),
+    breaks       = seq(0, 0.8, by = .2),
+    guide = guide_axis(minor.ticks = T),
+    labels = scales::number_format(accuracy = c(1, 0.1, 0.1, 0.1))
+    ) +  
+  theme_classic() +
+  labs(
+    title = "Distance Decay Realation",
+    subtitle = "Effect of Distance on Soil Bacterial Similarity",
+    x = "Distance (m, ln scale)",
+    y = "Soil bacterial Bray-Curtis\nsimilarity index",
+    caption = "Distance Decay Relationship of the soil bacterial commnunity: Based on glm with Gamma(link = 'log'). \n Shaded area represents the 95% Confidence Interval for predictions. Point show raw data.",
+    color = "Distance Categories"
+  ) +
+  theme(
+    plot.title    = element_text(hjust = 0.1, vjust = 1.5),  
+    plot.subtitle = element_text(hjust = 0.1, vjust = 2),  
+    plot.caption  = element_text(hjust = 0),
+    legend.position   = c(0.8, 0.82),
+    legend.title      = element_text('Distance bin', size = 11),
+    legend.key.height = unit(0.4, "cm"), 
+    legend.key.width  = unit(1.2, "cm"), 
+    legend.text       = element_text(size = 10), 
+    panel.grid.minor = element_line(
+      color = "lightgray", linetype = "dotted", size = 0.5),
+    axis.text.x  = element_text(color = "black", size = 10),
+    axis.text.y  = element_text(color = "black", size = 10),
+    axis.title.y = element_text(size = 13, margin = margin(r = 10)),
+    axis.title.x = element_text(size = 12.5, margin = margin(t = 10)) 
+  ) + 
+  annotate("text", x = 1, y = 0, label = paste("n =", nrow(dist_4way_df)), 
+           size = 3.5, color = "black")
+
+ggp_ddr_4w 
+
+ggp_ddr_4w_hist <- ggMarginal(ggp_ddr_4w, 
+           type = "histogram", 
+           groupFill = TRUE,
+           col = "white")
+
+
+# ggsave(plot = ggp_ddr_4w, paste0(dir_resu, "/ddr_4w.png"), width = 5.5, height = 6, dpi = 300)
+
+# ggsave(plot = ggp_ddr_4w_hist, paste0(dir_resu, "/ddr_4w_hist.png"), width = 5.5, height = 6, dpi = 300)
+
+```
+```{r}
+
+hist(dist_4way_df$bac_bray)
+hist(log(dist_4way_df$bac_bray))
+
+min(dist_4way_df$bac_bray)
+max(dist_4way_df$bac_bray)
+
+
+dist_4way_df %>% 
+  filter(dist_bin == 1) %>% 
+  arrange(bac_bray)
+
+dist_4way_df %>% 
+  filter(dist_bin == 1) %>%
+  skim()
+
+p_dist_ndata
+exp(p_dist_ndata$coor_haver_log[1])
+p_dist_ndata$predicted[1] - p_dist_ndata$lower_bound[1]
+p_dist_ndata$predicted[1] - p_dist_ndata$upper_bound[1]
+
+
+
+
+dist_4way_df %>% 
+  filter(bac_bray <= quantile(dist_4way_df$bac_bray, 0.05)[[1]]) %>% 
+  group_by(dist_bin) %>% 
+  summarise(n())
+
+dist_4way_df %>% 
+  filter(bac_bray <= quantile(dist_4way_df$bac_bray, 0.05)[[1]]) %>% 
+  arrange(bac_bray)
+
+
+dist_4way_df %>% 
+  filter(bac_bray == min(bac_bray))
+
+
+
+dist_4way_df %>% 
+  filter(physchem_eucl >= quantile(physchem_eucl, 0.90)[[1]]) %>% 
+  group_by(dist_bin) %>% 
+  summarise(n())
+
+53 / (53 + 11)
+91 / (91 + 37)
+
+```
+
+
+##### Effect plot 3 panel
+```{r ggp 3 panel effect plot - PC, message=FALSE, warning=FALSE}
+# Create a new data frame with these values and the other variables fixed 
+p_pc_ndata <- data.frame(
+  # New sequence to predict over
+  physchem_eucl  = seq(min(dist_4way_df$physchem_eucl),
+                       max(dist_4way_df$physchem_eucl), length.out = 100),
+  coor_haver_log = mean(dist_4way_df$coor_haver_log, na.rm = TRUE), 
+  plant_bray     = mean(dist_4way_df$plant_bray, na.rm = TRUE),  
+  p_trait_eucl   = mean(dist_4way_df$p_trait_eucl, na.rm = TRUE) 
+)
+
+# Predict the response using the glm model
+p_pc_pred <- predict(
+  glm_4w_gamm2, 
+  newdata = p_pc_ndata,
+  # Return the standard errors
+  se.fit = TRUE, 
+  # Prediction on the scale of the link function (log scale for Gamma)
+  type = "link"    
+)
+
+# Add the predictions and confidence intervals to the new_data
+p_pc_ndata <- p_pc_ndata %>%
+  mutate(
+    # Log scale back to the original scale (if using Gamma with log link)
+    predicted   = exp(p_pc_pred$fit),
+    # 95% CI
+    upper_bound = exp(p_pc_pred$fit + 1.96 * p_pc_pred$se.fit),
+    lower_bound = exp(p_pc_pred$fit - 1.96 * p_pc_pred$se.fit)
+  )
+
+# names(dist_4way_df)
+
+# Plot the effect of distance on bacterial bray 
+# Estimates are from the 4way model
+# predictions with mean for the other predictors
+# showing the 95% Confidence interval
+ggp_4w_pc <- ggplot() +
+  geom_point(
+    data = dist_4way_df, 
+    aes(y = bac_bray, x = physchem_eucl, color = as.factor(dist_bin)),
+    alpha = 0.5
+  ) +
+  scale_color_manual(
+    values = c('#B33C00', '#00B382', '#0072B2'),
+    labels = c("Within Plot", "Within Site", "Among Sites"),
+    # Change shape 
+    guide = guide_legend(override.aes = list(shape = 15, linetype = 1))
+    ) + 
+  geom_line(
+    data = p_pc_ndata, 
+    aes(y = predicted, x = physchem_eucl), color = "#4F4F4F"
+  ) +
+  geom_ribbon(
+    data = p_pc_ndata,
+    aes(x = physchem_eucl, ymin = lower_bound, ymax = upper_bound), 
+    fill = "black", alpha = 0.2
+  ) +
+  scale_x_continuous(
+    limits = c(0, round(max(
+        dist_4way_df$physchem_eucl), digits = 0))
+    ) +
+  scale_y_continuous(
+    limits       = c(0, 0.8),
+    breaks       = seq(0, 1, by = .2),
+    guide = guide_axis(minor.ticks = T)
+    ) +  
+  theme_classic() +
+  labs(
+    x = "Physio-chemical NP\nEuclidean",
+    y = "Soil bacterial Bray-Curtis similarity index",
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.1, vjust = 1.5),  
+    plot.subtitle = element_text(hjust = 0.1, vjust = 2),  
+    plot.caption = element_text(hjust = 0),
+    legend.position = "none", 
+    # Grid lines
+    panel.grid.minor = element_line(
+      color = "lightgray", linetype = "dotted", size = 0.5),
+    axis.text.x  = element_text(color = "black", size = 10),
+    axis.text.y  = element_text(color = "black", size = 10),
+    axis.title.y = element_text(size = 13, margin = margin(r = 10)),
+    axis.title.x = element_text(size = 12.5, margin = margin(t = 10)) 
+  )
+
+ggp_4w_pc
+
+# ggsave(plot = ggp_4w_pc, paste0(dir_resu, "ddr_4w_pc.png"), width = 5.5, height = 6, dpi = 300)
+
+```
+
+
+```{r ggp 3p pb - , message=FALSE, warning=FALSE}
+# Create a new data frame with these values and the other variables fixed 
+p_pb_ndata <- data.frame(
+  # New sequence to predict over
+  plant_bray     = seq(min(dist_4way_df$plant_bray),
+                       max(dist_4way_df$plant_bray), length.out = 100),
+  coor_haver_log = mean(dist_4way_df$coor_haver_log, na.rm = TRUE), 
+  physchem_eucl  = mean(dist_4way_df$physchem_eucl , na.rm = TRUE),  
+  p_trait_eucl   = mean(dist_4way_df$p_trait_eucl  , na.rm = TRUE) 
+)
+
+# Predict the response using the glm model
+p_pb_pred <- predict(
+  glm_4w_gamm2, 
+  newdata = p_pb_ndata,
+  # Return the standard errors
+  se.fit = TRUE, 
+  # Prediction on the scale of the link function (log scale for Gamma)
+  type = "link"    
+)
+
+# Add the predictions and confidence intervals to the new_data
+p_pb_ndata <- p_pb_ndata %>%
+  mutate(
+    # Log scale back to the original scale (if using Gamma with log link)
+    predicted   = exp(p_pb_pred$fit),
+    # 95% CI
+    upper_bound = exp(p_pb_pred$fit + 1.96 * p_pb_pred$se.fit),
+    lower_bound = exp(p_pb_pred$fit - 1.96 * p_pb_pred$se.fit)
+  )
+
+# names(dist_4way_df)
+
+# Plot the effect of plant bray on bacterial bray 
+# Estimates are from the 4way model
+# predictions with mean for the other predictors
+# showing the 95% Confidence interval
+ggp_4w_pb <- ggplot() +
+  geom_point(
+    data = dist_4way_df, 
+    aes(y = bac_bray, x = plant_bray, color = as.factor(dist_bin)),
+    alpha = 0.5
+  ) +
+  scale_color_manual(
+    values = c('#B33C00', '#00B382', '#0072B2'),
+    labels = c("Within Plot", "Within Site", "Among Sites"),
+    # Change shape 
+    guide = guide_legend(override.aes = list(shape = 15, linetype = 1))
+    ) + 
+  geom_line(
+    data = p_pb_ndata, 
+    aes(y = predicted, x = plant_bray), color = "#4F4F4F"
+  ) +
+  geom_ribbon(
+    data = p_pb_ndata,
+    aes(x = plant_bray, ymin = lower_bound, ymax = upper_bound), 
+    fill = "black", alpha = 0.2
+  ) +
+  scale_x_continuous(
+    limits = c(0, round(max(
+        dist_4way_df$plant_bray), digits = 0)),
+    breaks = c(0, 0.25, 0.5, 0.75, 1),
+    labels = scales::number_format(accuracy = c(1, 0.01, 0.1, 0.01, 1))
+    ) +
+  scale_y_continuous(
+    limits       = c(0, 0.8),
+    breaks       = seq(0, 1, by = .2),
+    guide = guide_axis(minor.ticks = T)
+#    minor_breaks = seq(0, 1, by = .1)
+    ) +  
+  theme_classic() +
+  labs(
+    x = "Plant Abundance\nBray-Curtis similarity",
+    y = "Soil bacterial Bray-Curtis similarity index"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.1, vjust = 1.5),  
+    plot.subtitle = element_text(hjust = 0.1, vjust = 2),  
+    plot.caption = element_text(hjust = 0),
+    legend.position = "none",
+    legend.title = element_text('Distance bin'), 
+    # Grid lines
+    panel.grid.minor = element_line(
+      color = "lightgray", linetype = "dotted", size = 0.5),
+    axis.text.y  = element_blank(),
+    axis.text.x = element_text(color = "black", size = 10),  
+    axis.title.y = element_blank(),
+    axis.title.x = element_text (size = 12.5, margin = margin(t = 10)), 
+    axis.ticks.y = element_blank()
+  )
+
+ggp_4w_pb
+
+# ggsave(plot = ggp_4w_pb, paste0(dir_resu, "ddr_4w_pb.png"), width = 5.5, height = 6, dpi = 300)
+
+```
+
+
+
+```{r ggp 3p pt - , message=FALSE, warning=FALSE}
+# Create a new data frame with these values and the other variables fixed 
+p_pt_ndata <- data.frame(
+  # New sequence to predict over
+  p_trait_eucl   = seq(min(dist_4way_df$p_trait_eucl),
+                       max(dist_4way_df$p_trait_eucl), length.out = 100),
+  coor_haver_log = mean(dist_4way_df$coor_haver_log, na.rm = TRUE), 
+  physchem_eucl  = mean(dist_4way_df$physchem_eucl , na.rm = TRUE),  
+  plant_bray     = mean(dist_4way_df$plant_bray    , na.rm = TRUE) 
+)
+
+# Predict the response using the glm model
+p_pt_pred <- predict(
+  glm_4w_gamm2, 
+  newdata = p_pt_ndata,
+  # Return the standard errors
+  se.fit = TRUE, 
+  # Prediction on the scale of the link function (log scale for Gamma)
+  type = "link"    
+)
+
+# Add the predictions and confidence intervals to the new_data
+p_pt_ndata <- p_pt_ndata %>%
+  mutate(
+    # Log scale back to the original scale (if using Gamma with log link)
+    predicted   = exp(p_pt_pred$fit),
+    # 95% CI
+    upper_bound = exp(p_pt_pred$fit + 1.96 * p_pt_pred$se.fit),
+    lower_bound = exp(p_pt_pred$fit - 1.96 * p_pt_pred$se.fit)
+  )
+
+# names(dist_4way_df)
+
+# Plot the effect of distance on bacterial bray 
+# Estimates are from the 4way model
+# predictions with mean for the other predictors
+# showing the 95% Confidence interval
+ggp_4w_pt <- ggplot() +
+  geom_point(
+    data = dist_4way_df, 
+    aes(y = bac_bray, x = p_trait_eucl, color = as.factor(dist_bin)),
+    alpha = 0.5
+  ) +
+  scale_color_manual(
+    values = c('#B33C00', '#00B382', '#0072B2'),
+    labels = c("Within Plot", "Within Site", "Among Sites"),
+    # Change shape 
+    guide = guide_legend(override.aes = list(shape = 15, linetype = 1))
+    ) + 
+  geom_line(
+    data = p_pt_ndata, 
+    aes(y = predicted, x = p_trait_eucl), color = "#4F4F4F"
+  ) +
+  geom_ribbon(
+    data = p_pt_ndata,
+    aes(x = p_trait_eucl, ymin = lower_bound, ymax = upper_bound), 
+    fill = "black", alpha = 0.2
+  ) +
+  scale_x_continuous(
+    limits = c(0, round(max(
+        dist_4way_df$p_trait_eucl), digits = 0)),
+    breaks = c(0, 2.5, 5, 7.5),
+    labels = scales::number_format(accuracy = c(1, 0.1, 1, 0.1))
+    ) +
+  scale_y_continuous(
+    limits       = c(0, 0.8),
+    breaks       = seq(0, 1, by = .2),
+    guide = guide_axis(minor.ticks = T)
+#    minor_breaks = seq(0, 1, by = .1)
+    ) +  
+  theme_classic() +
+  labs(
+    x = "Plant traits\nEuclidean",
+    y = "Soil bacterial Bray-Curtis similarity index"
+  ) +
+  theme(
+    plot.title    = element_text(hjust = 0.1, vjust = 1.5),  
+    plot.subtitle = element_text(hjust = 0.1, vjust = 2),  
+    plot.caption  = element_text(hjust = 0),
+    legend.position   = c(0.7, 0.92),
+    legend.title      = element_blank(),
+    legend.key.height = unit(0.4, "cm"), 
+    legend.key.width  = unit(1.2, "cm"), 
+    legend.text       = element_text(size = 11),
+    # Grid lines
+    panel.grid.minor = element_line(
+      color = "lightgray", linetype = "dotted", size = 0.5),
+    axis.text.y  = element_blank(),
+    axis.text.x  = element_text (color = "black", size = 10),  
+    axis.title.y = element_blank(),
+    axis.title.x = element_text (size = 12.5, margin = margin(t = 10)), 
+    axis.ticks.y = element_blank()
+  )
+
+ggp_4w_pt
+
+# ggsave(plot = ggp_4w_pt, paste0(dir_resu, "ddr_4w_pt.png"), width = 5.5, height = 6, dpi = 300)
+
+```
+
+
+```{r Effect plot 3pannel all in one, message=FALSE, warning=FALSE}
+ggp_4w_3p <- ggp_4w_pc + ggp_4w_pb + ggp_4w_pt + 
+  plot_layout(ncol = 3) +  
+  plot_annotation(
+    title = "Effect plots - model predictions",
+    subtitle = "4-way glm gamma log-link",
+    # tag_levels = "A"
+  )
+
+ggp_4w_3p
+# ggsave(plot = ggp_4w_3p, paste0(dir_resu, "ddr_4w_3p.png"), width = 15, height = 6, dpi = 300)
+```
+
+
+
+
+## Chapter 2 - Sublements
+### Analysis of linear physio-chemical distances
+
+#### Introduction
+
+Physio-chemical properties of soil are very known to have a great influence on the soil micro-biome. Here we show how the individual differences of each soil property between sample affect the difference in Bray-Curtis dissimilarity of the soil bacteria rather than their combined effect as one Euclidean distance. 
+
+#### Data
+We have the same format of data where every sample is pair with each other and given one value that encompass the differences. Here we what to know the effect of pH, water content, nitrogen, carbon, and CN ratio on the bacterial community. 
+
+
+<details>
+  <summary>Expand for data summary.</summary>
+
+```{r c2 data}
+# names(dist_nona_df)
+dist_pc_df <-  dist_nona_df %>% 
+  dplyr::select(c(id, id2, bac_bray, coor_haver, coor_haver_log, 
+           pc_c_manh, pc_cnr_manh, pc_n_manh, pc_ph_manh, pc_soil_moist_manh))
+skim(dist_pc_df)
+
+```
+</details>
+
+#### Model
+
+We compare yet again a `Gamma` against a `Gaussian` distribution and 
+
+```{r c2 models, message=FALSE, warning=FALSE}
+# names(dist_pc_df)
+
+# Gaussian
+# without powerlaw
+glm_pc_gau1 <- glm(
+  bac_bray ~ coor_haver +
+    pc_c_manh + pc_cnr_manh + pc_n_manh + pc_ph_manh + pc_soil_moist_manh,
+  family = gaussian(link = "log"),
+  data = dist_pc_df, na.action = na.exclude)
+sum_glm_pc_gau1 <- summary(glm_pc_gau1)
+# with powerlaw
+glm_pc_gau2 <- glm(
+  bac_bray ~ coor_haver_log + 
+    pc_c_manh + pc_cnr_manh + pc_n_manh + pc_ph_manh + pc_soil_moist_manh,
+  family = gaussian(link = "log"),
+  data = dist_pc_df, na.action = na.exclude)
+sum_glm_pc_gau2 <- summary(glm_pc_gau2)
+
+# Gamma
+# without powerlaw
+glm_pc_gam1 <- glm(
+  bac_bray ~ coor_haver +
+    pc_c_manh + pc_cnr_manh + pc_n_manh + pc_ph_manh + pc_soil_moist_manh,
+  family = Gamma(link = "log"),
+  data = dist_pc_df, na.action = na.exclude)
+sum_glm_pc_gam1 <- summary(glm_pc_gam1)
+# with powerlaw
+glm_pc_gam2 <- glm(
+  bac_bray ~ coor_haver_log + 
+    pc_c_manh + pc_cnr_manh + pc_n_manh + pc_ph_manh + pc_soil_moist_manh,
+  family = Gamma(link = "log"),
+  data = dist_pc_df, na.action = na.exclude)
+sum_glm_pc_gam2 <- summary(glm_pc_gam2)
+
+```
+
+Summary of the models showing the AIC, our ceteria to judge the best fit for further analysis. Yet again the Gamma distribution with the log transformed distance metrics performes the best. 
+
+```{r c2 sum 1, message=FALSE, warning=FALSE, include=T}
+data.frame(
+  model          = c(
+    rep("GLM", 4)),
+  id       = c(
+    rep("4way",4)),
+  fam         = c(
+    c(rep("Gaus",2), rep("Gamm",2))),
+  Power_law      = c(
+    rep(c("-", "+"),2)),
+  aic            = c(
+    sum_glm_pc_gau1$aic,
+    sum_glm_pc_gau2$aic,
+    sum_glm_pc_gam1$aic,
+    sum_glm_pc_gam2$aic),
+  `deviance0`  = c(
+    sum_glm_pc_gau1$null.deviance,
+    sum_glm_pc_gau2$null.deviance,
+    sum_glm_pc_gam1$null.deviance,
+    sum_glm_pc_gam2$null.deviance),
+  `df0`        = c(
+    sum_glm_pc_gau1$df.null,
+    sum_glm_pc_gau2$df.null,
+    sum_glm_pc_gam1$df.null,
+    sum_glm_pc_gam2$df.null),
+  `res deviance` = c(
+    sum_glm_pc_gau1$deviance,
+    sum_glm_pc_gau2$deviance,
+    sum_glm_pc_gam1$deviance,
+    sum_glm_pc_gam2$deviance),
+  `res df`     = c(
+    sum_glm_pc_gau1$df.residual,
+    sum_glm_pc_gau2$df.residual,
+    sum_glm_pc_gam1$df.residual,
+    sum_glm_pc_gam2$df.residual)) %>% 
+  arrange(.$aic)
+```
+
+
+#### 4.3 Bidirectional predictor selection
+
+```{r c2 predictor selection, echo=TRUE, message=FALSE, warning=FALSE, include=FALSE}
+# Alpha, intercept only model
+glm_pc_gam2_a <- glm(
+  bac_bray ~ 1,
+  family = Gamma(link = "log"),
+  data = dist_pc_df, na.action = na.exclude)
+
+# Omega, all predictors with their interactions
+glm_pc_gam2_o <- glm(
+  bac_bray ~ coor_haver_log * 
+    pc_c_manh * pc_cnr_manh * pc_n_manh * pc_ph_manh * pc_soil_moist_manh,
+  family = Gamma(link = "log"),
+  data = dist_pc_df, na.action = na.exclude)
+
+# Bidirectional predictor selection 
+glm_pc_gam2_step <- step(
+  glm_pc_gam2_a, 
+  scope = list(lower = glm_pc_gam2_a, upper = glm_pc_gam2_o), 
+  direction = "both", na.action = na.exclude)
+```
+
+
+Nevertheless we include the plant traits in our model to make it directly compatible to our variance partitioning. The full 4-way model structure is the following:
+
+```{r message=FALSE, warning=FALSE}
+# Specifying the final 4way model
+glm_pc <- glm(
+  formula = bac_bray ~ 
+    pc_ph_manh + pc_c_manh + coor_haver_log + pc_n_manh + pc_cnr_manh +
+    pc_ph_manh:coor_haver_log + pc_ph_manh:pc_c_manh + 
+    pc_c_manh:pc_n_manh + pc_ph_manh:pc_cnr_manh + pc_ph_manh:pc_n_manh + 
+    pc_ph_manh:pc_c_manh:pc_n_manh, 
+  family = Gamma(link = "log"), 
+  data = dist_nona_df, na.action = na.exclude)
+
+summary(glm_pc)
+```
+
+
+### Effect plots
+
+```{r c2 eff plot 0, eval=FALSE, message=FALSE, warning=FALSE, include=T}
+predict_response(glm_pc)
+predict_response(glm_pc, terms = c("predictor_main", "predictor_color"))
+```
+
+
+
+
+```{r c2 effect plot, echo=TRUE, message=FALSE, warning=FALSE}
+# names(dist_pc_df)
+pred_res_glm_pc  <- predict_response(glm_pc)
+
+plot(predict_response(
+  glm_pc, terms = c("coor_haver_log", "pc_ph_manh")),
+     show_data = T)
+
+plot(predict_response(
+  glm_pc, terms = c("pc_ph_manh", "coor_haver_log")),
+     show_data = T)
+
+plot(predict_response(
+  glm_pc, terms = c("pc_c_manh", "coor_haver_log")),
+     show_data = T)
+
+plot(predict_response(
+  glm_pc, terms = c("pc_n_manh", "coor_haver_log")),
+     show_data = T)
+
+plot(predict_response(
+  glm_pc, terms = c("pc_cnr_manh", "coor_haver_log")),
+     show_data = T)
+
+
+```
