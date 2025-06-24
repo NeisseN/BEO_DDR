@@ -195,7 +195,7 @@ skim(vp.biotic_niche_process_passive)[c(2,4:6,12)]
 ### Full Variance Partitioning
 **Q: What does it matter that the different explanatory variables are not of the same dimension -> Active plants with 106 attributes (columns) vs. 'dispersal' with 2 only? **
 
-If we run a full variation partitioning model that excludes the all observations containing any Na's (unfortunately the function does not provide any setting options like the rda), we donot get any estimation for plant ID. Also we receive a lot of warnings for coliniearity!
+If we run a full variation partitioning model that excludes the all observations containing any Na's (unfortunately the function does not provide any setting options like the rda), we donot get any estimation for plant ID. Also we receive a lot of warnings for co-linearity!
 
 ```{r varparfull, echo=FALSE, message=FALSE, warning=FALSE}
 rarefied.nNa <- subset_samples(rarefied, complete.cases(vp.abiotic_niche_process))
