@@ -38,7 +38,7 @@ sapply(c(.cran_packages, .bioc_packages), require, character.only = TRUE)
 
 # Directories ------------------------------------------------------------------
 getwd()
-dir_wd   <- file.path('C:', 'code', 'eddsbc')
+dir_wd   <- file.path('C:', 'code', 'BEO_DDR')
 dir_data <- file.path(dir_wd, 'data')
 dir_fun  <- file.path(dir_wd, 'helper_functions')
 dir_resu <- file.path(dir_wd, 'output')
@@ -299,6 +299,6 @@ distances_df <- distances_df %>%
 
 
 # Save the data ----------------------------------------------------------------
-write.csv(distances_df, paste0(dir_data, 'distances_df.csv'),
+write.csv(distances_df, file.path(dir_data, 'distances_df.csv'),
           row.names = F)
 

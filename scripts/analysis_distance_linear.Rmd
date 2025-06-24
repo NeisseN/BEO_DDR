@@ -91,7 +91,7 @@ invisible(sapply(c(.cran_packages), function(pkg) {
  
 ```
 ```{r check_dir, message=FALSE, warning=FALSE, include=FALSE}
-dir_wd   <- file.path('C:', 'code', 'eddsbc')
+dir_wd   <- file.path('C:', 'code', 'BEO_DDR')
 dir_data <- file.path(dir_wd, 'data')
 dir_resu <- file.path(dir_wd, 'output')
 ```
@@ -111,7 +111,7 @@ Side notes:
 
 ```{r data, echo=TRUE, message=FALSE, warning=FALSE}
 ## Load the data
-distances_df <- read.csv(paste0(dir_data, 'distances_df.csv')) %>% 
+distances_df <- read.csv(file.path(dir_data, 'distances_df.csv')) %>% 
   # changing dissimilarity to similarity to match distance decay model
   mutate(bac_bray_dis   = .$bac_bray,
          plant_bray_dis = .$plant_bray,
@@ -616,7 +616,7 @@ ggp_ddr_4w <- ggplot() +
   labs(
     title = "Distance Decay Realation",
     subtitle = "Effect of Distance on Soil Bacterial Similarity",
-    x = "Distance (m, ln scale)",
+    x = "Distance (m, log scale)",
     y = "Soil bacterial Bray-Curtis\nsimilarity index",
     caption = "Distance Decay Relationship of the soil bacterial commnunity: Based on glm with Gamma(link = 'log'). \n Shaded area represents the 95% Confidence Interval for predictions. Point show raw data.",
     color = "Distance Categories"
