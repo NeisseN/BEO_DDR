@@ -219,8 +219,21 @@ meta <- meta %>%
   left_join(p.cover, by = join_by(id)) %>% 
   left_join(p.inv, by = join_by(id)) %>% 
   left_join(LUI, by = join_by(EP_Plotid))
+
+meta_clean <- meta %>% 
+  dplyr::select(id, loc, EP_Plotid, QNR) %>% 
+  left_join(coordd, by = join_by(id)) %>% 
+  left_join(soil, by = join_by(id)) %>% 
+  left_join(p.biomass, by = join_by(id)) %>% 
+  left_join(p.traits, by = join_by(id)) %>% 
+  left_join(p.cover, by = join_by(id)) %>% 
+  left_join(p.inv, by = join_by(id))
+
 rm(coordd,P,leach,respira,LUI,soil,topography, 
    p.biomass, p.traits, p.cover, p.inv)
+  
+write.csv(meta_clean, row.names = F,
+          file.path(dir_data, 'df_meta.csv'))
 
 
 # Unclassified taxa ------------------------------------------------------------
