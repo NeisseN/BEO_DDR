@@ -425,7 +425,7 @@ mod_ca_eu <- euler(c(
   "A&E"     = 0.01,
   "A&B&C"   = 0.16,
   "A&B&E"   = 0.10,
-  "B&B&E"   = 0.01
+  "B&C&E"   = 0.01
 ))
 
 p_ca_eu <- plot(mod_ca_eu,
@@ -440,6 +440,64 @@ p_ca_eu <- plot(mod_ca_eu,
 0.01/2 + 0.1/3 + 0.15/2 + 0.16/3+ 0/2 
 0.16/3 + 0.03/2 
 0.01/2 + 0.01/2 + 0.1/3
+
+```
+```{r}
+library(eulerr)
+library(grid)
+library(viridis)
+
+# Create a function to generate the full custom Euler diagram
+plot_custom_euler <- function(mod_ca_eu) {
+  # Create the Euler diagram object
+  p <- plot(mod_ca_eu,
+            quantities = FALSE,
+            fills = list(fill = viridis(4), alpha = 0.6),
+            labels = FALSE,
+            main = NULL)
+  
+  # Start a new page and draw scaled plot
+  grid.newpage()
+  vp <- viewport(width = 0.8, height = 0.8)
+  pushViewport(vp)
+  grid.draw(p)
+  
+  # Custom annotations
+  # grid.text("Community analysis",
+  #           x = 0.5,  y = 1.05, gp = gpar(fontsize = 16, fontface = "bold"))
+  grid.text("A. Soil               \nproperties",         
+            x = 0.06, y = 0.6,   gp = gpar(fontface = "bold"))
+  grid.text("B. Geographic\ndistance",                    
+            x = 0.95, y = 0.6,   gp = gpar(fontface = "bold"))
+  grid.text("C. Plant similarity",                        
+            x = 0.5,  y = -0.05, gp = gpar(fontface = "bold"))
+  # grid.text("D. Plant traits",             
+  #           x = 0.95, y = 0.95, gp = gpar(fontface = "bold"))
+  grid.text("E. Interaction of A. and B.",                
+            x = 0.5,  y = 1.05,  gp = gpar(fontface = "bold"))
+  grid.text("Residuals = 0.42",                           
+            x = 0.95, y = -0.05)
+  
+  # Unique fractions
+  grid.text("0.15 ***", x = 0.25, y = 0.5)
+  grid.text("0.09 ***", x = 0.815, y = 0.5)
+  grid.text("0.01 *",   x = 0.51, y = 0.035)
+  grid.text("0.01 ***", x = 0.61, y = 0.945)
+  
+  # 2-way overlaps
+  grid.text("0.15", x = 0.62 , y = 0.54)
+  grid.text("0.03", x = 0.41, y = 0.12)
+  grid.text("0.01", x = 0.46, y = 0.99)
+  
+  # 3-way overlaps
+  grid.text("0.16", x = 0.57, y = 0.26)
+  grid.text("0.10", x = 0.6, y = 0.7)
+  grid.text("0.01", x = 0.51, y = 0.57)
+  grid.text("0.01", x = 0.73, y = 0.44)
+  
+  # 4-way overlap
+  grid.text("0.01", x = 0.58, y = 0.42)
+}
 
 ```
 
@@ -616,7 +674,7 @@ ggp_ddr_4w <- ggplot() +
   labs(
     title = "Distance Decay Realation",
     subtitle = "Effect of Distance on Soil Bacterial Similarity",
-    x = "Distance (m, log scale)",
+    x = "Distance (log(m))",
     y = "Soil bacterial Bray-Curtis\nsimilarity index",
     caption = "Distance Decay Relationship of the soil bacterial commnunity: Based on glm with Gamma(link = 'log'). \n Shaded area represents the 95% Confidence Interval for predictions. Point show raw data.",
     color = "Distance Categories"
@@ -670,10 +728,45 @@ dist_4way_df %>%
   filter(dist_bin == 1) %>%
   skim()
 
+# Prediction at min
 p_dist_ndata
 exp(p_dist_ndata$coor_haver_log[1])
+p_dist_ndata$predicted[1]
 p_dist_ndata$predicted[1] - p_dist_ndata$lower_bound[1]
 p_dist_ndata$predicted[1] - p_dist_ndata$upper_bound[1]
+
+# Prediction at mean BIN 1
+dist_4way_df %>% 
+  filter(dist_bin == 1) %>% 
+  summarise(mean(coor_haver_log))
+
+exp(p_dist_ndata$coor_haver_log[5])
+p_dist_ndata$predicted[5]
+p_dist_ndata$predicted[5] - p_dist_ndata$lower_bound[5]
+p_dist_ndata$predicted[5] - p_dist_ndata$upper_bound[5]
+
+# Prediction at mean BIN 2
+dist_4way_df %>% 
+  filter(dist_bin == 2) %>% 
+  summarise(mean(coor_haver_log))
+# 8.589501
+
+exp(p_dist_ndata$coor_haver_log[60])
+p_dist_ndata$predicted[60]
+p_dist_ndata$predicted[60] - p_dist_ndata$lower_bound[60]
+p_dist_ndata$predicted[60] - p_dist_ndata$upper_bound[60]
+
+
+# Prediction at mean BIN 3
+dist_4way_df %>% 
+  filter(dist_bin == 3) %>% 
+  summarise(mean(coor_haver_log))
+# 12.69765	
+
+exp(p_dist_ndata$coor_haver_log[99])
+p_dist_ndata$predicted[99]
+p_dist_ndata$predicted[99] - p_dist_ndata$lower_bound[99]
+p_dist_ndata$predicted[99] - p_dist_ndata$upper_bound[99]
 
 
 

@@ -1,7 +1,7 @@
 ---
-title: "Spatial Range"
+title: "Taxa Range"
 author: "Neisse"
-date: "2025-06-30"
+date: "2025-01-29"
 output: 
   html_document:
     toc: true
@@ -45,7 +45,7 @@ dir_data <- 'path/to/BEO_DDR/data/'
 # Define CRAN packages
 .cran_packages <- c(
   'GeoRange','tidyverse','viridis', 'skimr', 'patchwork', 'grid',
-  'png', 'cowplot', 'ggExtra')
+  'png', 'cowplot')
 
 # Define Bioconductor packages
 .bioc_packages <- c('phyloseq') 
@@ -111,50 +111,56 @@ for (i in 1:ncol(otu)) {
     # Convert to sf points in WGS84 (lon/lat)
     pts_sf <- st_as_sf(coords_df, coords = c("lon", "lat"), crs = 4326)
 
-    # Transform to UTM Zone 33N (Berlin)
-    pts_utm <- st_transform(pts_sf, crs = 32633)
+    # Transform to UTM Zone 32N (adjust if your data is in a different UTM zone)
+    pts_utm <- st_transform(pts_sf, crs = 32632)
 
     # Compute convex hull and its area in m²
     hull <- st_convex_hull(st_union(pts_utm))
     area_m2 <- st_area(hull)
 
-    # Convert to m² and store in the data frame
-    CHAdf$chull_areas[i] <- as.numeric(area_m2)
+    # Convert to km² and store in the data frame
+    CHAdf$chull_areas[i] <- as.numeric(area_m2) / 1e6
   } else {
     CHAdf$chull_areas[i] <- 0
   }
-} 
+}
 
-CHAdf <- CHAdf %>%
-  mutate(chull_areas_log = log(chull_areas + 1))
+```
 
-CHAdf$category <- NA  # initialize column
 
-for (i in 1:ncol(otu)) {
-  sub.nr <- which(otu[, i] > 0)  # samples with ASV i
-  locs <- unique(rarefied@sam_data$loc[sub.nr])
-  plots <- unique(rarefied@sam_data$EP_Plotid[sub.nr])
 
-  if (length(locs) == 1 && length(plots) == 1) {
-    CHAdf$category[i] <- "within_plot"
-  } else if (length(locs) == 1 && length(plots) > 1) {
-    CHAdf$category[i] <- "within_site"
-  } else if (length(locs) > 1) {
-    CHAdf$category[i] <- "between_site"
+#### GCD 
+Calculates the maximum pairwise great circle distance from a set of decimal degree coordinates
+
+```{r GCD}
+library(geosphere)
+
+GCD <- function(lon, lat) {
+  coords <- cbind(lon, lat)
+  if (nrow(coords) >= 2) {
+    max(distm(coords, fun = distHaversine)) / 1000  # km
   } else {
-    CHAdf$category[i] <- "undefined"  # should rarely happen
+    return(0)
   }
 }
 
+for (i in length(rarefied@sam_data$lon)) {
+  GCD(rarefied@sam_data$lon[i], rarefied@sam_data$lat)
+}
+GCDdf <- GCD(rarefied@sam_data$lon, rarefied@sam_data$lat)
 
-CHAdf_summary <- CHAdf %>%
-  group_by(category) %>%
-  summarise(max_area_m2     = max(chull_areas,     na.rm = TRUE),
-            max_area_m2_log = max(chull_areas_log, na.rm = TRUE)) %>%
-  arrange(desc(max_area_m2))
 
-print(CHAdf_summary)
+```
 
+
+### Prevalence
+Proportion of sites in which the species was recorded as present
+
+```{r Prevalence}
+Prevdf <- data.frame(asv = colnames(rarefied@otu_table))
+for (i in 1:ncol(rarefied@otu_table)) {
+  Prevdf$prev[i] <- sum(rarefied@otu_table[,i] != 0)/nrow(rarefied@otu_table[,i])
+}
 ```
 
 
@@ -167,13 +173,10 @@ Abundf$abun <- colSums(rarefied@otu_table)/23942/nrow(rarefied@otu_table)
 ### Taxa
 Taxadf <- data.frame(rarefied@tax_table)
 Taxadf$asv <- rownames(Taxadf)
-```
 
-
-```{r data merge}
 ### Big Merge 
 # List of data frames to merge
-dfs <- list(Abundf, CHAdf, Taxadf)
+dfs <- list(Abundf, Prevdf, CHAdf, GCDdf, Taxadf)
 # Merge
 df <- Reduce(function(x, y) merge(x, y, by = "asv", all.x = TRUE), dfs) 
 
@@ -205,6 +208,24 @@ skim(df)
 
 ## Plots
 
+### Abundance by Prevalence
+```{r}
+ggplot() +
+  geom_point(data = df, aes(x = prev, y= abun)) +
+  labs(x = "Rel. Abundace", y = "Prevalence") +
+  theme_classic()
+```
+
+
+### Convex Hull Area by Prevalence
+```{r}
+ggplot() +
+  geom_point(data = df, aes(x = prev, y= chull_areas)) +
+  labs(x = "Convex Hull Area (m2)", y = "Prevalence") +
+  theme_classic()
+```
+
+
 ### Convex Hull Area by Abundance 
 ```{r}
 ggplot() +
@@ -213,11 +234,11 @@ ggplot() +
   theme_classic()
 
 ggp_ch_abund <- ggplot() +
-  geom_point(data = df, aes(x = abun * 100, y = chull_areas_log, 
+  geom_point(data = df, aes(x = abun * 100, y = chull_areas, 
                             colour = factor(d8phyl, levels = dominant_phyla))) +
   scale_color_manual(values = viridis_pal()(8)) +
-  labs(x = "Relative Abundance (%)", 
-       y = "Convex Hull Area log(m²)", 
+  labs(x = "Rel. Abundance (%)", 
+       y = "Convex Hull Area (km²)", 
        colour = "Phylum") +
   theme_classic() +
   theme(axis.title.x = element_text(size = 16),
@@ -250,16 +271,11 @@ df %>%
 ```
 
 
-```{r}
+```{r plot spatial range}
 
-v_dist_c1_log <- 2.302585
-v_dist_c2_log <- 18.963247
-v_dist_c3_log <- 22.354616
-
-
-# Prepare df: replace NA with "Other" and factorize
+# Prepare df: replace NA with "Rest" and factorize
 df$d8phyl <- as.character(df$d8phyl)
-df$d8phyl[is.na(df$d8phyl)] <- "Other"
+df$d8phyl[is.na(df$d8phyl)] <- "Rest"
 df$d8phyl <- factor(df$d8phyl)
 
 # Axis limits
@@ -271,17 +287,17 @@ counts_df <- df %>%
   group_by(d8phyl) %>%
   summarise(n = sum(!is.na(abun) & !is.na(chull_areas)), .groups = "drop")
 
-# Order groups by descending count, but put 'Other' last
+# Order groups by descending count, but put 'Rest' last
 ordered_groups <- counts_df %>%
-  mutate(order_rank = ifelse(d8phyl == "Other", Inf, -n)) %>%
+  mutate(order_rank = ifelse(d8phyl == "Rest", Inf, -n)) %>%
   arrange(order_rank) %>%
   pull(d8phyl) %>% as.vector()
 
-# Define colors: viridis for non-Other, grey for Other
-non_Other <- setdiff(levels(df$d8phyl), "Other")
-colors <- viridis(length(non_Other))
+# Define colors: viridis for non-Rest, grey for Rest
+non_rest <- setdiff(levels(df$d8phyl), "Rest")
+colors <- viridis(length(non_rest))
 names(colors) <- ordered_groups[1:8] %>% as.vector()
-colors <- c(colors, Other = "grey")
+colors <- c(colors, Rest = "grey")
 
 
 # Prepare data subsets and counts
@@ -309,221 +325,188 @@ n_G <- sum(!is.na(df_G$abun) & !is.na(df_G$chull_areas))
 df_H <- df %>% filter(d8phyl == ordered_groups[8])
 n_H <- sum(!is.na(df_H$abun) & !is.na(df_H$chull_areas))
 
-df_Other <- df %>% filter(d8phyl == "Other")
-n_Other <- sum(!is.na(df_Other$abun) & !is.na(df_Other$chull_areas))
+df_Rest <- df %>% filter(d8phyl == "Rest")
+n_Rest <- sum(!is.na(df_Rest$abun) & !is.na(df_Rest$chull_areas))
 
-
-# Axis limits
-y_max <- max(df$chull_areas_log, na.rm = TRUE)
+# Replace with actual phylum names you have, or more blocks as needed.
 
 # -------- Plot A --------
+mod_A     <- lm(chull_areas ~ I(abun * 100), data = df_A)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_A   <- predict(mod_A, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_A <- data.frame(x = xseq, fit = preds_A[, "fit"], lwr = pmin(preds_A[, "lwr"], y_max), upr = pmin(preds_A[, "upr"], y_max))
+
 plot_A <- ggplot() +
-  geom_point(
-    data = df_A, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+  geom_point(data = df_A, aes(x = abun * 100, y = chull_areas), color = colors[1]) +
+#  geom_ribbon(data = pred_df_A, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_A, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
-  labs(
-    title = ordered_groups[1],
-    subtitle = paste0("(n = ", n_A, ")")
-  ) +
+  labs(title = ordered_groups[1], subtitle = paste0("(n = ", n_A, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none"
-  )
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
 # -------- Plot B --------
+mod_B     <- lm(chull_areas ~ I(abun * 100), data = df_B)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_B   <- predict(mod_B, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_B <- data.frame(x = xseq, fit = preds_B[, "fit"], lwr = pmin(preds_B[, "lwr"], y_max), upr = pmin(preds_B[, "upr"], y_max))
+
 plot_B <- ggplot() +
-  geom_point(
-    data = df_B, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+  geom_point(data = df_B, aes(x = abun * 100, y = chull_areas), color = colors[2]) +
+#  geom_ribbon(data = pred_df_B, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_B, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
   labs(title = ordered_groups[2], subtitle = paste0("(n = ", n_B, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none")
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
 # -------- Plot C --------
+mod_C     <- lm(chull_areas ~ I(abun * 100), data = df_C)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_C   <- predict(mod_C, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_C <- data.frame(x = xseq, fit = preds_C[, "fit"], lwr = pmin(preds_C[, "lwr"], y_max), upr = pmin(preds_C[, "upr"], y_max))
+
 plot_C <- ggplot() +
-  geom_point(
-    data = df_C, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+  geom_point(data = df_C, aes(x = abun * 100, y = chull_areas), color = colors[3]) +
+#  geom_ribbon(data = pred_df_C, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_C, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
   labs(title = ordered_groups[3], subtitle = paste0("(n = ", n_C, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none")
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
 # -------- Plot D --------
+mod_D     <- lm(chull_areas ~ I(abun * 100), data = df_D)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_D   <- predict(mod_D, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_D <- data.frame(x = xseq, fit = preds_D[, "fit"], lwr = pmin(preds_D[, "lwr"], y_max), upr = pmin(preds_D[, "upr"], y_max))
+
 plot_D <- ggplot() +
-  geom_point(
-    data = df_D, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+  geom_point(data = df_D, aes(x = abun * 100, y = chull_areas), color = colors[4]) +
+#  geom_ribbon(data = pred_df_D, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_D, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
   labs(title = ordered_groups[4], subtitle = paste0("(n = ", n_D, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none")
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
 # -------- Plot E --------
+mod_E     <- lm(chull_areas ~ I(abun * 100), data = df_E)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_E   <- predict(mod_E, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_E <- data.frame(x = xseq, fit = preds_E[, "fit"], lwr = pmin(preds_E[, "lwr"], y_max), upr = pmin(preds_E[, "upr"], y_max))
+
 plot_E <- ggplot() +
-  geom_point(
-    data = df_E, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+  geom_point(data = df_E, aes(x = abun * 100, y = chull_areas), color = colors[5]) +
+#  geom_ribbon(data = pred_df_E, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_E, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
   labs(title = ordered_groups[5], subtitle = paste0("(n = ", n_E, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none")
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
 # -------- Plot F --------
+mod_F     <- lm(chull_areas ~ I(abun * 100), data = df_F)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_F   <- predict(mod_F, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_F <- data.frame(x = xseq, fit = preds_F[, "fit"], lwr = pmin(preds_F[, "lwr"], y_max), upr = pmin(preds_F[, "upr"], y_max))
+
 plot_F <- ggplot() +
-  geom_point(
-    data = df_F, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+  geom_point(data = df_F, aes(x = abun * 100, y = chull_areas), color = colors[6]) +
+#  geom_ribbon(data = pred_df_F, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_F, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
   labs(title = ordered_groups[6], subtitle = paste0("(n = ", n_F, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none")
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
 # -------- Plot G --------
+mod_G     <- lm(chull_areas ~ I(abun * 100), data = df_G)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_G   <- predict(mod_G, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_G <- data.frame(x = xseq, fit = preds_G[, "fit"], lwr = pmin(preds_G[, "lwr"], y_max), upr = pmin(preds_G[, "upr"], y_max))
+
 plot_G <- ggplot() +
-  geom_point(
-    data = df_G, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+  geom_point(data = df_G, aes(x = abun * 100, y = chull_areas), color = colors[7]) +
+#  geom_ribbon(data = pred_df_G, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_G, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
   labs(title = ordered_groups[7], subtitle = paste0("(n = ", n_G, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none")
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
 # -------- Plot H --------
+mod_H     <- lm(chull_areas ~ I(abun * 100), data = df_H)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_H   <- predict(mod_H, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_H <- data.frame(x = xseq, fit = preds_H[, "fit"], lwr = pmin(preds_H[, "lwr"], y_max), upr = pmin(preds_H[, "upr"], y_max))
+
 plot_H <- ggplot() +
-  geom_point(
-    data = df_H, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+  geom_point(data = df_H, aes(x = abun * 100, y = chull_areas), color = colors[8]) +
+#  geom_ribbon(data = pred_df_H, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_H, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
   labs(title = ordered_groups[8], subtitle = paste0("(n = ", n_H, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none")
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
-# -------- Plot Other --------
-plot_Other <- ggplot() +
-  geom_point(
-    data = df_Other, 
-    aes(x = abun * 100, y = chull_areas_log, color = category),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
+# -------- Plot Rest --------
+mod_R     <- lm(chull_areas ~ I(abun * 100), data = df_Rest)
+xseq      <- seq(0, x_max, length.out = 100)
+preds_R   <- predict(mod_R, newdata = data.frame(abun = xseq / 100), interval = "confidence")
+pred_df_R <- data.frame(x = xseq, fit = preds_R[, "fit"], lwr = pmin(preds_R[, "lwr"], y_max), upr = pmin(preds_R[, "upr"], y_max))
+
+plot_Rest <- ggplot() +
+  geom_point(data = df_Rest, aes(x = abun * 100, y = chull_areas), color = "grey") +
+#  geom_ribbon(data = pred_df_R, aes(x = x, ymin = lwr, ymax = upr), fill = "grey", alpha = 0.3) +
+#  geom_line(data = pred_df_R, aes(x = x, y = fit), color = "grey30") +
   scale_x_continuous(limits = c(0, x_max)) +
   scale_y_continuous(limits = c(0, y_max)) +
-  scale_color_manual(values = c(
-    "within_plot" = "#B33C00", 
-    "within_site" = "#00B382", 
-    "between_site" = "#0072B2"
-  )) +
-  labs(title = "Other", subtitle = paste0("(n = ", n_Other, ")")) +
+  labs(title = "Rest", subtitle = paste0("(n = ", n_Rest, ")")) +
   theme_classic() +
   theme(
     axis.title = element_blank(),
     plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none")
+    plot.subtitle = element_text(hjust = 0.5, size = 10))
 
 
 # Combine plots ------------------
 plot_list <- list(
   plot_A, plot_B, plot_C,
   plot_D, plot_E, plot_F,
-  plot_G, plot_H, plot_Other)
+  plot_G, plot_H, plot_Rest)
 
 combined_patch <- wrap_plots(plot_list, ncol = 3)
 
@@ -531,9 +514,9 @@ combined_patch <- wrap_plots(plot_list, ncol = 3)
 patch_grob <- patchworkGrob(combined_patch)
 
 # Embed patchwork grob in new ggplot with global axis titles
-spatial_range_log_colcat <- ggplot() +
+final_plot <- ggplot() +
   annotation_custom(patch_grob) +
-  labs(x = "Relative Abundance (%)", y = "Convex Hull Area (log(m²))") +
+  labs(x = "Relative Abundance (%)", y = "Convex Hull Area (km²)") +
   theme_classic(base_size = 12) +
   theme(
     plot.margin = margin(20, 20, 20, 20),
@@ -541,204 +524,11 @@ spatial_range_log_colcat <- ggplot() +
     axis.title.y = element_text(size = 16, angle = 90, vjust = 3)
   )
 
-print(spatial_range_log_colcat)
+print(final_plot)
 
-# ggsave(plot = spatial_range_log_colcat, paste0("C:/code/BEO_DDR/output/spatial_range_log_colcat.png"), width = 9, height = 10, dpi = 300)
-```
-```{r}
-df_A_1 <- df_A %>% 
-  filter(category == 'within_plot')
-df_A_2 <- df_A %>% 
-  filter(category == 'within_site')
-df_A_3 <- df_A %>% 
-  filter(category == 'between_site')
-
-plot_A_1 <- ggplot() +
-  geom_point(
-    data = df_A_1, 
-    aes(x = abun * 100, y = chull_areas_log, color = "#B33C00"),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
-  scale_x_continuous(limits = c(0, x_max)) +
-  scale_y_continuous(limits = c(0, max(df_A_1$chull_areas_log))) +
-  labs(
-    title = paste0(ordered_groups[1], ' - within plot'),
-    subtitle = paste0("(n = ", n_A, ")")
-  ) +
-  theme_classic() +
-  theme(
-    axis.title = element_blank(),
-    plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none"
-  )
-
-plot_A_2 <- ggplot() +
-  geom_point(
-    data = df_A_2, 
-    aes(x = abun * 100, y = chull_areas_log, color = "#00B382"),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
-  scale_x_continuous(limits = c(0, x_max)) +
-  scale_y_continuous(limits = c(0, max(df_A_2$chull_areas_log))) +
-  labs(
-    title = paste0(ordered_groups[1], ' - within site'),
-    subtitle = paste0("(n = ", n_A, ")")
-  ) +
-  theme_classic() +
-  theme(
-    axis.title = element_blank(),
-    plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none"
-  )
-
-plot_A_3 <- ggplot() +
-  geom_point(
-    data = df_A_3, 
-    aes(x = abun * 100, y = chull_areas_log, color = "#0072B2"),
-    shape = 16, size = 2.5, alpha = 0.5
-  ) +
-  scale_x_continuous(limits = c(0, x_max)) +
-  scale_y_continuous(limits = c(0, max(df_A_3$chull_areas_log))) +
-  labs(
-    title = paste0(ordered_groups[1], ' - within site'),
-    subtitle = paste0("(n = ", n_A, ")")
-  ) +
-  theme_classic() +
-  theme(
-    axis.title = element_blank(),
-    plot.title = element_text(hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, size = 10),
-    legend.position = "none"
-  )
+# ggsave(plot = final_plot, paste0("C:/code/BEO_DDR/output/spatial_range.png"), width = 9, height = 10, dpi = 300)
 
 ```
-```{r}
-df_A_3 %>% 
-  filter(chull_areas_log < 10) %>% 
-  .$asv
-
-as.data.frame(otu) %>% 
-  select(df_A_3 %>% 
-  filter(chull_areas_log < 10) %>% 
-  .$asv)
-```
-
-
-
-```{r}
-df %>%
-  mutate(abun = abun * 100) %>% 
-  skim()
-
-df %>%
-  mutate(abun = abun * 100) %>% 
-  summarise(p99 = quantile(abun, 0.99))
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.1) %>%
-  count()
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.25) %>%
-  count()
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.4) %>%
-  count()
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.1,
-         chull_areas_log <= 2) %>% 
-  count() %>% 
-  arrange(desc(n))
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.1 & abun <.25,
-         category == 'within_site') %>% 
-  count() %>% 
-  arrange(desc(n))
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.1 & abun <.25,
-         category == 'between_site') %>% 
-  count() %>% 
-  arrange(desc(n))
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.25,
-         category == 'within_site') %>% 
-  count() %>% 
-  arrange(desc(n))
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.25,
-         category == 'between_site') %>% 
-  count() %>% 
-  arrange(desc(n))
-
-df %>%
-  mutate(abun = abun * 100) %>%
-  group_by(d8phyl) %>% 
-  filter(abun >= 0.1,
-         category == 'within_site') %>% view()
-
-
-```
-
-
-
-```{r most abundant ASVs spatial range}
-
-df %>%
-  mutate(abun = abun * 100) %>% 
-  filter(abun >= 0.48) %>% 
-  dplyr::select(abun, chull_areas, Kingdom, Phylum, Class, Order, Family, Genus)
-
-df %>%
-  mutate(abun = abun * 100) %>% 
-  filter(abun >= 0.48) %>% 
-  dplyr::select(abun, chull_areas, Kingdom, Phylum, Class, Order, Family, Genus) %>% 
-  summarise(mean(abun))
-
-```
-
-
-## Analysis
-
-```{r}
-hist(df$abun)
-hist(log(df$abun))
-qqnorm(log(df$abun), main='Normal')
-qqline(log(df$abun))
-
-#shapiro.test(log(df$abun))
-ks.test(log(df$abun), 'pnorm')
-
-kruskal.test(df$abun ~ df$Phylum)
-#pairwise.wilcox.test(df$abun, df$Phylum, p.adjust.method = "bonferroni") 
-```
-
-
-
-
 
 ```{r}
 df %>%
@@ -809,6 +599,37 @@ df %>%
   dplyr::select(abun, chull_areas, Kingdom, Phylum, Class, Order, Family, Genus) %>% 
   summarise(mean(abun))
 
+```
+
+
+
+
+### GCD by Abundance
+```{r}
+ggplot() +
+  geom_jitter(data = df, aes(x = abun, 
+                             y= log(gcd + 0.001))) + # + a small value to avoid -inv
+  labs(x = "Rel. Abundace", y = "GCD log transformed", colour = 'Phylum') +
+  theme_classic()
+
+ggplot() +
+  geom_jitter(data = df, aes(x = abun, y= log(gcd+0.001), 
+                             colour = factor(d8phyl, levels = dominant_phyla))) +
+  scale_color_manual(values = viridis_pal()(8)) +
+  labs(x = "Rel. Abundace", y = "GCD log transformed", colour = 'Phylum') +
+  theme_classic() +
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 10, angle = 60, vjust = .6, color = 'black'),
+        axis.text.y = element_text(size = 10, angle = 60, hjust = 1, vjust = -.3, color = 'black'),
+        axis.ticks.x = element_line(linewidth = 2, lineend = "butt"),
+        axis.ticks.y = element_line(linewidth = 2, lineend = "butt"),
+        axis.ticks.length  = unit(0.1, "cm"),
+        axis.line = element_line(linewidth = 1.1),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 10),  # Customize legend text size
+        legend.key.size = unit(0.6, "cm")) + # Customize legend key size
+  facet_wrap(~d8phyl)
 ```
 
 
