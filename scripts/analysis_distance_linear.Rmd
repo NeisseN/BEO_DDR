@@ -1092,16 +1092,39 @@ ggp_4w_pt
 
 
 ```{r Effect plot 3pannel all in one, message=FALSE, warning=FALSE}
-ggp_4w_3p <- ggp_4w_pc + ggp_4w_pb + ggp_4w_pt + 
-  plot_layout(ncol = 3) +  
+# Add tags and center them at the top of each plot
+ggp_4w_pc <- ggp_4w_pc + 
+  labs(tag = "A") + 
+  theme(
+    plot.tag.position = c(0.2, 1),
+    plot.tag = element_text(face = "bold", hjust = 0.5, vjust = 1)
+  )
+
+ggp_4w_pb <- ggp_4w_pb + 
+  labs(tag = "B") + 
+  theme(
+    plot.tag.position = c(0.13, 1),
+    plot.tag = element_text(face = "bold", hjust = 0.5, vjust = 1)
+  )
+
+ggp_4w_pt <- ggp_4w_pt + 
+  labs(tag = "C") + 
+  theme(
+    plot.tag.position = c(0.13, 1),
+    plot.tag = element_text(face = "bold", hjust = 0.5, vjust = 1)
+  )
+
+# Combine without tag_levels
+ggp_4w_3p <- ggp_4w_pc + ggp_4w_pb + ggp_4w_pt +
+  plot_layout(ncol = 3) +
   plot_annotation(
     title = "Effect plots - model predictions",
-    subtitle = "4-way glm gamma log-link",
-    # tag_levels = "A"
+    subtitle = "4-way glm gamma log-link"
   )
 
 ggp_4w_3p
-# ggsave(plot = ggp_4w_3p, paste0(dir_resu, "ddr_4w_3p.png"), width = 15, height = 6, dpi = 300)
+
+# ggsave(plot = ggp_4w_3p, file.path(dir_resu, "ddr_4w_3p.png"), width = 15, height = 6, dpi = 300)
 ```
 
 

@@ -370,14 +370,13 @@ text(x = c(-2.25, -2.55, 2.1, 2.1),
      y = c(-.05, 1, 1, 0), 
      labels = c(
        'Location', 'Soil\n          properties', 
-       'Plant\n        community', 'Plant\ntraits'), 
+       'Plant\n        community', 'Vegetation\ncharacteristics'), 
      srt = 0, pos = 1, xpd = TRUE,
      cex = 1.5)
 # dev.off()
-
 ```
 ```{r}
-png("C:/code/BEO_DDR/output/varpar4w_sig.png", width = 1200, height = 800)
+png("C:/code/BEO_DDR/output/varpar4w_sig.png", width = 1300, height = 800)
 plot(varpar4way,
      Xnames = c('', '', '', ''),
      bg = c("#440154FF", "#31688EFF", "#35B779FF", "#FDE725FF"),
@@ -385,15 +384,16 @@ plot(varpar4way,
      digits = 1,
      cutoff = 1,
      cex = 1)
-rect(xleft = 1, ybottom = -1.8, xright = 2.3, ytop = -1.5, 
+rect(xleft = 1, ybottom = -1.8, xright = 2.5, ytop = -1.5, 
      col = "white", border = NA)
 
-text(x = c(-2.1, -2.1, 1.7, 2), 
+text(x = c(-2.1, -2.1, 1.7, 2.1), 
      y = c(-.04, 1, 1, 0), 
      labels = c(
        'Location', 'Soil\n          properties', 
-       'Plant\n          community', 'Plant\ntraits'), 
+       'Plant\n          community', 'Vegetation\n      characteristics'), 
      srt = 0, pos = 1, xpd = TRUE, cex = 2.5)
+
 text(labels = 
        c('0.02', '0.01', '0.07', '0.01',
          '0.03', '0.13', '0.01', '0.00', '', '0.02',
