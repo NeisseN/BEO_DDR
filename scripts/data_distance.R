@@ -14,7 +14,7 @@ set.seed(100)
 
 # Packages ---------------------------------------------------------------------
 # Define CRAN packages
-.cran_packages <- c('tidyverse', 'vegan', 'corrplot', 'geosphere') 
+.cran_packages <- c('tidyverse', 'vegan', 'corrplot', 'geosphere', 'janitor') 
 .bioc_packages <- c('phyloseq')  
 
 # Install missing CRAN packages
@@ -83,8 +83,9 @@ bac_bray_df <- fun_distance(
 # Plant relative abundance Bray-Curtis -----------------------------------------
 # Plant abundance df
 plant_abund <- rare_meta %>% 
+  clean_names() %>% 
   dplyr::select(
-    grep('^[a-zA-Z]{4}\\.[a-zA-Z]{4}$', names(rare_meta), value = TRUE)
+    grep('^[A-Za-z]{4}[_.][A-Za-z]{4}$', names(rare_meta), value = TRUE)
   )
 
 # Replace all NAs with 0, biologically: NA here means not present
@@ -114,35 +115,41 @@ plant_bray_df <- fun_distance(
 
 # Plant-traits -----------------------------------------------------------------
 # Plant-trait df
-plant_traits_all_df <- rare_meta %>% 
+plant_traits_all_df <- rare_meta %>%
+  clean_names() %>% 
+  tibble::rownames_to_column(var = "id") %>%  # create 'id' from rownames
   dplyr::select(
-    c('id', 'RawBioM', 'BioMass_g', 'BioMass_g_m2', 'tdw.g',
-      'h.veg_cm', 'h.reg_cm', 'LMA', 'SLA',
-      'COV_Bare', 'COV_Litter', 'COV_Veg', 'COV_Moss', 
-      'COV_Living', 'COV_Senesc',
-      'COV_Forb', 'COV_Gras', 'COV_Leg')) %>% 
+    id, raw_bio_m, bio_mass_g, bio_mass_g_m2, tdw_g,
+    h_veg_cm, h_reg_cm, lma, sla,
+    cov_bare, cov_litter, cov_veg, cov_moss, 
+    cov_living, cov_senesc,
+    cov_forb, cov_gras, cov_leg
+  ) %>% 
   mutate(id = as.factor(id))
 plant_traits_all_df[2:ncol(plant_traits_all_df)] <- lapply(
   plant_traits_all_df[2:ncol(plant_traits_all_df)],
-  as.numeric
-)
+  as.numeric)
 
 corrplot(cor(plant_traits_all_df[c(2:ncol(plant_traits_all_df))]), 
          type = 'upper', method = 'square', diag = FALSE, 
          addCoef.col = 'darkgrey', number.cex = .7,
          tl.srt = 45, tl.cex = 1, tl.offset = 1)
 
+cor(
+  plant_traits_all_df[2:ncol(plant_traits_all_df)], 
+  use = "pairwise.complete.obs")
+
 # Here is my keep suggestion: 
 # Biomass representing productivity
 # 
 plant_traits_df <- plant_traits_all_df %>% 
   dplyr::select(
-    c('BioMass_g',
+    c('bio_mass_g',
       # LMA: mass of a leaf per unit area in grams per square meter (g/m²) VS.
       # SLA: reciprocal LMA, leaf area per unit leaf mass, in square meters per gram (m²/g). 
-      'SLA',
-      'COV_Bare', 'COV_Litter', 'COV_Moss', 
-      'COV_Senesc'))
+      'sla',
+      'cov_bare', 'cov_litter', 'cov_moss', 
+      'cov_senesc'))
 
 corrplot(cor(plant_traits_df[c(2:ncol(plant_traits_df))]), 
          type = 'upper', method = 'square', diag = FALSE, 
@@ -159,56 +166,55 @@ p_trait_eucl_df <- fun_distance(
 
 # Biomass manhattan
 pt_biomass_manh_df <- fun_distance(
-  data = plant_traits_df[c('BioMass_g')], 
+  data = plant_traits_df[c('bio_mass_g')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pt_biomass', dir_data = dir_data
 )
 
 # SLA manhattan
 pt_sla_manh_df <- fun_distance(
-  data = plant_traits_df[c('SLA')], 
+  data = plant_traits_df[c('sla')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pt_sla', dir_data = dir_data
 )
 
-# COV_Bare manhattan
+# cov_bare manhattan
 pt_cov_bare_manh_df <- fun_distance(
-  data = plant_traits_df[c('COV_Bare')], 
+  data = plant_traits_df[c('cov_bare')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pt_cov_bare', dir_data = dir_data
 )
 
-# COV_Litter manhattan
+# cov_litter manhattan
 pt_cov_litter_manh_df <- fun_distance(
-  data = plant_traits_df[c('COV_Litter')], 
+  data = plant_traits_df[c('cov_litter')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pt_cov_litter', dir_data = dir_data
 )
 
-# COV_Moss manhattan
+# cov_moss manhattan
 pt_cov_moss_manh_df <- fun_distance(
-  data = plant_traits_df[c('COV_Moss')], 
+  data = plant_traits_df[c('cov_moss')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pt_cov_moss', dir_data = dir_data
 )
 
-# COV_Senesc manhattan
+# cov_senesc manhattan
 pt_cov_senesc_manh_df <- fun_distance(
-  data = plant_traits_df[c('COV_Senesc')], 
+  data = plant_traits_df[c('cov_senesc')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pt_cov_senesc', dir_data = dir_data
 )
 
 
-# Physio-chemical distances ----------------------------------------------------
-# Physio-chemical df
+# physio-chemical distances ----------------------------------------------------
+# physio-chemical df
 physchem_df <- rare_meta %>% 
-  dplyr::select(c('C_.', 'N_.', 'Soil_moisture', 'pH')) %>% 
-  rename(C = 'C_.', N = 'N_.')
+  dplyr::select(c('c', 'n', 'soil_moisture', 'ph'))
 physchem_df[] <- lapply(physchem_df[], as.numeric)  
-physchem_df <- physchem_df %>% mutate(cnr = C/N)
+physchem_df <- physchem_df %>% mutate(cnr = c/n)
 
-# Physio-chemical euclidean distance
+# physio-chemical euclidean distance
 physchem_eucl_df <- fun_distance(
   data = physchem_df, method = 'euclidean', scale_data = T,
   prefix = 'physchem', dir_data = dir_data
@@ -216,28 +222,28 @@ physchem_eucl_df <- fun_distance(
 
 # C manhattan
 pc_c_manh_df <- fun_distance(
-  data = physchem_df[c('C')], 
+  data = physchem_df[c('c')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pc_c', dir_data = dir_data
 )
 
 # N manhattan
 pc_n_manh_df <- fun_distance(
-  data = physchem_df[c('N')], 
+  data = physchem_df[c('n')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pc_n', dir_data = dir_data
 )
 
-# Soil_moisture manhattan
+# soil_moisture manhattan
 pc_soil_moist_manh_df <- fun_distance(
-  data = physchem_df[c('Soil_moisture')], 
+  data = physchem_df[c('soil_moisture')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pc_soil_moist', dir_data = dir_data
 )
 
-# pH manhattan
+# ph manhattan
 pc_ph_manh_df <- fun_distance(
-  data = physchem_df[c('pH')], 
+  data = physchem_df[c('ph')], 
   method = 'manhattan', scale_data = T,
   prefix = 'pc_ph', dir_data = dir_data
 )
